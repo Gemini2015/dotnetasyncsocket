@@ -199,15 +199,15 @@ namespace EchoServer
 		private void asyncSocket_DidRead(AsyncSocket sender, Data data, long tag)
 		{
 			String msg = null;
-		//	try
-		//	{
-		//		msg = Encoding.UTF8.GetString(data.ByteArray);
-		//		LogMessage(msg);
-		//	}
-		//	catch(Exception e)
-		//	{
-		//		LogError("Error converting received data into UTF-8 String: {0}", e);
-		//	}
+			try
+			{
+				msg = Encoding.UTF8.GetString(data.ByteArray);
+				LogMessage(msg);
+			}
+			catch(Exception e)
+			{
+				LogError("Error converting received data into UTF-8 String: {0}", e);
+			}
 
 			// Even if we were unable to write the incoming data to the log,
 			// we're still going to echo it back to the client.
