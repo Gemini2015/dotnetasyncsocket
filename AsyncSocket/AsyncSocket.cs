@@ -896,7 +896,7 @@ namespace Deusty.Net
 								OnSocketWillConnect(socket6);
 
 								// Attempt to connect with the given information
-								socket6.BeginConnect(address, port, new AsyncCallback(socket_DidConnect), socket4);
+								socket6.BeginConnect(address, port, new AsyncCallback(socket_DidConnect), socket6);
 
 								// Stop looping through addresses
 								done = true;
