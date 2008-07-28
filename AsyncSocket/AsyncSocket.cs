@@ -57,13 +57,14 @@ namespace Deusty.Net
 		private const int WRITE_CHUNKSIZE   = (32 * 256);
 
 		private volatile byte flags;
-		private const byte kDidPassConnectMethod   =  1; // If set, disconnection results in delegate call.
-		private const byte kDidCallConnectDelegate =  2; // If set, connect delegate has been called.
-		private const byte kPauseReads             =  4; // If set, reads are not dequeued until further notice.
-		private const byte kPauseWrites            =  8; // If set, writes are not dequeued until further notice.
-		private const byte kForbidReadsWrites      = 16; // If set, no new reads or writes are allowed.
-		private const byte kDisconnectAfterReads   = 32; // If set, disconnect as soon as no more reads are queued.
-		private const byte kDisconnectAfterWrites  = 64; // If set, disconnect as soon as no more writes are queued.
+		private const byte kDidPassConnectMethod   =   1; // If set, disconnection results in delegate call.
+		private const byte kDidCallConnectDelegate =   2; // If set, connect delegate has been called.
+		private const byte kPauseReads             =   4; // If set, reads are not dequeued until further notice.
+		private const byte kPauseWrites            =   8; // If set, writes are not dequeued until further notice.
+		private const byte kForbidReadsWrites      =  16; // If set, no new reads or writes are allowed.
+		private const byte kDisconnectAfterReads   =  32; // If set, disconnect as soon as no more reads are queued.
+		private const byte kDisconnectAfterWrites  =  64; // If set, disconnect as soon as no more writes are queued.
+		private const byte kStop                   = 128; // If set, sockets are closing or closed.
 
 		private Queue readQueue;
 		private Queue writeQueue;
@@ -592,6 +593,9 @@ namespace Deusty.Net
 				return false;
 			}
 
+			// Reset flags
+			flags = 0;
+
 			// Extract proper IPAddress(es) from the given hostaddr
 			IPAddress address4;
 			IPAddress address6;
@@ -717,7 +721,9 @@ namespace Deusty.Net
 		/// <param name="iar"></param>
 		private void socket_DidAccept(IAsyncResult iar)
 		{
-			// Any reason to lock here?
+			if ((flags & kStop) > 0) return;
+
+			// No reason to lock here
 			try
 			{
 				Socket socket = (Socket)iar.AsyncState;
@@ -844,6 +850,9 @@ namespace Deusty.Net
 				return false;
 			}
 
+			// Reset flags
+			flags = 0;
+
 			// Attention: Lock within public method.
 			// Note: Should be fine since we can only get this far if the socket is null.
 			lock (this)
@@ -933,6 +942,8 @@ namespace Deusty.Net
 		/// </param>
 		private void socket_DidConnect(IAsyncResult iar)
 		{
+			if ((flags & kStop) > 0) return;
+
 			// We lock in this method to ensure that the SocketDidConnect delegate fires before
 			// processing any reads or writes. ScheduledDequeue methods may be lurking.
 			// Also this ensures the flags are properly updated prior to any other locked method executing.
@@ -1207,6 +1218,8 @@ namespace Deusty.Net
 		/// </summary>
 		private void Close()
 		{
+			flags |= kStop;
+
 			EmptyQueues();
 
 			if (secureSocketStream != null)
@@ -1239,7 +1252,8 @@ namespace Deusty.Net
 
 			if ((flags & kDidCallConnectDelegate) > 0)
 			{
-				flags = 0;
+				// Remove all flags except stop flag
+				flags = kStop;
 
 				// Notify delegate that we're now disconnected.
 				// Note that it's safe for the delegate to call Connect() from the callback method.
@@ -1247,7 +1261,8 @@ namespace Deusty.Net
 			}
 			else
 			{
-				flags = 0;
+				// Remove all flags except stop flag
+				flags = kStop;
 			}
 		}
 
@@ -1282,7 +1297,7 @@ namespace Deusty.Net
 			this.socket4 = null;
 			this.socket6 = null;
 			
-			flags = 0x00;
+			flags = 0;
 			
 			Close();
 		}
@@ -1294,8 +1309,7 @@ namespace Deusty.Net
 		/// </summary>
 		public void DisconnectAfterReading()
 		{
-			flags |= kForbidReadsWrites;
-			flags |= kDisconnectAfterReads;
+			flags |= (kForbidReadsWrites | kDisconnectAfterReads);
 			
 			// Schedule an immediate call to MaybeDisconnect without blocking
 			ScheduleDisconnect();
@@ -1308,8 +1322,7 @@ namespace Deusty.Net
 		/// </summary>
 		public void DisconnectAfterWriting()
 		{
-			flags |= kForbidReadsWrites;
-			flags |= kDisconnectAfterWrites;
+			flags |= (kForbidReadsWrites | kDisconnectAfterWrites);
 			
 			// Schedule an immediate call to MaybeDisconnect without blocking
 			ScheduleDisconnect();
@@ -1541,6 +1554,19 @@ namespace Deusty.Net
 			return 0;
 		}
 
+		public int Available
+		{
+			get
+			{
+				if (socket4 != null)
+					return socket4.Available;
+				else if(socket6 != null)
+					return socket6.Available;
+				else
+					return 0;
+			}
+		}
+
 		public override string ToString()
 		{
 			// Todo: Add proper description for AsyncSocket
@@ -1650,7 +1676,7 @@ namespace Deusty.Net
 		/// This method is called on a background (worker) thread.
 		/// </summary>
 		/// <param name="state">Not used</param>
-		public void UnscheduleDequeueRead(object state)
+		private void UnscheduleDequeueRead(object state)
 		{
 			MaybeDequeueRead();
 		}
@@ -1910,7 +1936,7 @@ namespace Deusty.Net
 		/// <param name="state">state is AsyncReadPacket.</param>
 		private void stream_DidNotRead(object state)
 		{
-				lock (lockObj)
+			lock (lockObj)
 			{
 				if (state == currentRead)
 				{
