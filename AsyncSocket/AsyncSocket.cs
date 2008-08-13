@@ -22,7 +22,7 @@ namespace Deusty.Net
 		public delegate void SocketWillDisconnect(AsyncSocket sender, Exception e);
 		public delegate void SocketDidDisconnect(AsyncSocket sender);
 		public delegate void SocketDidAccept(AsyncSocket sender, AsyncSocket newSocket);
-		public delegate void SocketWillConnect(AsyncSocket sender, Socket socket);
+		public delegate bool SocketWillConnect(AsyncSocket sender, Socket socket);
 		public delegate void SocketDidConnect(AsyncSocket sender, IPAddress address, UInt16 port);
 		public delegate void SocketDidRead(AsyncSocket sender, Data data, long tag);
 		public delegate void SocketDidReadPartial(AsyncSocket sender, int partialLength, long tag);
@@ -72,10 +72,13 @@ namespace Deusty.Net
 		private AsyncReadPacket currentRead;
 		private AsyncWritePacket currentWrite;
 
+		private System.Threading.Timer connectTimer;
 		private System.Threading.Timer readTimer;
 		private System.Threading.Timer writeTimer;
 
 		private MutableData readOverflow;
+
+		private Guid dnsGuid;
 
 		// We use a seperate lock object instead of locking on 'this'.
 		// This is necessary to avoid a tricky deadlock situation.
@@ -89,6 +92,10 @@ namespace Deusty.Net
 		// - The += method is blocking until we finish our lock(this) block.
 		// - We won't finish our lock(this) block until the delegate methods complete. 
 		private Object lockObj = new Object();
+
+		///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+		#region Utility Classes
+		///////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 		/// <summary>
 		/// The AsyncReadPacket encompasses the instructions for a read.
@@ -165,6 +172,24 @@ namespace Deusty.Net
 			}
 		}
 
+		private class ConnectParameters
+		{
+			public String host;
+			public UInt16 port;
+			public Guid guid;
+
+			public ConnectParameters(String host, UInt16 port, Guid guid)
+			{
+				this.host = host;
+				this.port = port;
+				this.guid = guid;
+			}
+		}
+
+		///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+		#endregion
+		///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 		///////////////////////////////////////////////////////////////////////////////////////////////////////////////
 		#region Setup
 		///////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -222,12 +247,14 @@ namespace Deusty.Net
 			}
 		}
 
-		protected virtual void OnSocketWillConnect(Socket socket)
+		protected virtual bool OnSocketWillConnect(Socket socket)
 		{
 			if (WillConnect != null)
 			{
-				Invoke(WillConnect, this, socket);
+				return (bool)Invoke(WillConnect, this, socket);
 			}
+
+			return true;
 		}
 
 		protected virtual void OnSocketDidConnect(IPAddress address, UInt16 port)
@@ -586,7 +613,7 @@ namespace Deusty.Net
 			error = null;
 			
 			// Make sure we're not already listening for connections, or already connected
-			if ((socket4 != null) || (socket6 != null))
+			if ((flags & kDidPassConnectMethod) > 0)
 			{
 				String e = "Attempting to connect while connected or accepting connections. Disconnect first.";
 				error = new Exception(e);
@@ -798,7 +825,7 @@ namespace Deusty.Net
 
 		/// <summary>
 		/// Begins an asynchronous connection attempt to the specified host and port.
-		/// Returns false if the connection attempt immediately failed, in which case the error parameter will be set.
+		/// Returns false if the connection attempt immediately fails.
 		/// If this method succeeds, the delegate will be informed of the
 		/// connection success/failure via the proper delegate methods.
 		/// </summary>
@@ -821,12 +848,39 @@ namespace Deusty.Net
 
 		/// <summary>
 		/// Begins an asynchronous connection attempt to the specified host and port.
+		/// Returns false if the connection attempt immediately fails.
+		/// If this method succeeds, the delegate will be informed of the
+		/// connection success/failure via the proper delegate methods.
+		/// </summary>
+		/// <param name="host">
+		///		The host name or IP address to connect to.
+		///		E.g. "deusty.com" or "70.85.193.226" or "2002:cd9:3ea8:0:88c8:b211:b605:ab59"
+		/// </param>
+		/// <param name="port">
+		///		The port to connect to (eg. 80)
+		/// </param>
+		/// <param name="timeout">
+		///		Timeout in milliseconds. Specify a negative value if no timeout is desired.
+		/// </param>
+		/// <returns>
+		///		True if the socket was able to begin attempting to connect to the given host and port.
+		///		False otherwise.
+		///	</returns>
+		public bool Connect(String host, UInt16 port, int timeout)
+		{
+			Exception error;
+			return Connect(host, port, timeout, out error);
+		}
+
+		/// <summary>
+		/// Begins an asynchronous connection attempt to the specified host and port.
 		/// Returns false if the connection attempt immediately failed, in which case the error parameter will be set.
 		/// If this method succeeds, the delegate will be informed of the
 		/// connection success/failure via the proper delegate methods.
 		/// </summary>
 		/// <param name="host">
-		///		The host to connect to (eg. "deusty.com")
+		///		The host name or IP address to connect to.
+		///		E.g. "deusty.com" or "70.85.193.226" or "2002:cd9:3ea8:0:88c8:b211:b605:ab59"
 		/// </param>
 		/// <param name="port">
 		///		The port to connect to (eg. 80)
@@ -840,10 +894,38 @@ namespace Deusty.Net
 		/// </returns>
 		public bool Connect(String host, UInt16 port, out Exception error)
 		{
+			return Connect(host, port, -1, out error);
+		}
+
+		/// <summary>
+		/// Begins an asynchronous connection attempt to the specified host and port.
+		/// Returns false if the connection attempt immediately failed, in which case the error parameter will be set.
+		/// If this method succeeds, the delegate will be informed of the
+		/// connection success/failure via the proper delegate methods.
+		/// </summary>
+		/// <param name="host">
+		///		The host name or IP address to connect to.
+		///		E.g. "deusty.com" or "70.85.193.226" or "2002:cd9:3ea8:0:88c8:b211:b605:ab59"
+		/// </param>
+		/// <param name="port">
+		///		The port to connect to (eg. 80)
+		/// </param>
+		/// <param name="timeout">
+		///		Timeout in milliseconds. Specify a negative value if no timeout is desired.
+		/// </param>
+		/// <param name="error">
+		///		If this method returns false, the error will contain the reason for it's failure.
+		/// </param>
+		/// <returns>
+		///		True if the socket was able to begin attempting to connect to the given host and port.
+		///		False otherwise.  If false consult the error parameter for more information.
+		///	</returns>
+		public bool Connect(String host, UInt16 port, int timeout, out Exception error)
+		{
 			error = null;
 			
 			// Make sure we're not already connected, or listening for connections
-			if ((socket4 != null) || (socket6 != null))
+			if ((flags & kDidPassConnectMethod) > 0)
 			{
 				String e = "Attempting to connect while connected or accepting connections. Disconnect first.";
 				error = new Exception(e);
@@ -855,74 +937,34 @@ namespace Deusty.Net
 
 			// Attention: Lock within public method.
 			// Note: Should be fine since we can only get this far if the socket is null.
-			lock (this)
+			lock (lockObj)
 			{
 				try
 				{
-					IPAddress[] addresses = Dns.GetHostAddresses(host);
+					// We're about to start resolving the host name asynchronously.
+					// The catch is that we can't stop this process.
+					// We can stop any asynchronous socket operation by closing the socket.
+					// So to prevent rouge dns queries from affecting future queries,
+					// we tag each dns request with a GUID. If the dns callback has a different
+					// GUID than the current dnsGuid variable, we know we can ignore it.
+					dnsGuid = Guid.NewGuid();
+					ConnectParameters parameters = new ConnectParameters(host, port, dnsGuid);
 
-					if (addresses.Length == 0)
+					// Start time-out timer
+					if (timeout >= 0)
 					{
-						throw new Exception(String.Format("Unable to resolve host \"{0}\"", host));
+						connectTimer = new System.Threading.Timer(new TimerCallback(socket_DidNotConnect),
+						                                          dnsGuid,
+						                                          timeout,
+						                                          Timeout.Infinite);
 					}
 
-					bool done = false;
-					for(int i = 0; i < addresses.Length && !done; i++)
-					{
-						IPAddress address = addresses[i];
-
-						if (address.AddressFamily == AddressFamily.InterNetwork)
-						{
-							// Initialize a new socket
-							socket4 = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
-
-							// Allow delegate to configure the socket if needed
-							OnSocketWillConnect(socket4);
-
-							// Attempt to connect with the given information
-							socket4.BeginConnect(address, port, new AsyncCallback(socket_DidConnect), socket4);
-
-							// Stop looping through addresses
-							done = true;
-						}
-						else if (address.AddressFamily == AddressFamily.InterNetworkV6)
-						{
-							if (Socket.OSSupportsIPv6)
-							{
-								// Initialize a new socket
-								socket6 = new Socket(AddressFamily.InterNetworkV6, SocketType.Stream, ProtocolType.Tcp);
-
-								// Allow delegate to configure the socket if needed
-								OnSocketWillConnect(socket6);
-
-								// Attempt to connect with the given information
-								socket6.BeginConnect(address, port, new AsyncCallback(socket_DidConnect), socket6);
-
-								// Stop looping through addresses
-								done = true;
-							}
-						}
-					}
-
-					if (!done)
-					{
-						String format = "Unable to resolve host \"{0}\" to valid IPv4 or IPv6 address";
-						throw new Exception(String.Format(format, host));
-					}
+					// Start resolving the host
+					Dns.BeginGetHostAddresses(host, new AsyncCallback(Dns_DidResolve), parameters);
 				}
 				catch (Exception e)
 				{
 					error = e;
-					if (socket4 != null)
-					{
-						socket4.Close();
-						socket4 = null;
-					}
-					if (socket6 != null)
-					{
-						socket6.Close();
-						socket6 = null;
-					}
 					return false;
 				}
 
@@ -933,12 +975,122 @@ namespace Deusty.Net
 		}
 
 		/// <summary>
+		/// Callback method when dns has resolved the host (or was unable to resolve it).
+		/// 
+		/// This method is thread safe.
+		/// </summary>
+		/// <param name="iar">
+		///		The state of the IAsyncResult refers to the ConnectRequest object
+		///		containing the parameters of the original call to the Connect() method.
+		/// </param>
+		private void Dns_DidResolve(IAsyncResult iar)
+		{
+			// Check to make sure the async socket hasn't been closed/stopped.
+			if ((flags & kStop) > 0) return;
+
+			ConnectParameters parameters = (ConnectParameters)iar.AsyncState;
+
+			// There's one other thing we need to check:
+			// We have no way of stopping an asynchronous dns query.
+			// So we need to make sure this callback is still requested.
+			if (parameters.guid != dnsGuid)
+			{
+				// We no longer need the result of the dns query.
+				// Properly end the async procedure, but ignore the result.
+				try
+				{
+					Dns.EndGetHostAddresses(iar);
+				}
+				catch { }
+
+				return;
+			}
+
+			lock (lockObj)
+			{
+				try
+				{
+					IPAddress[] addresses = Dns.EndGetHostAddresses(iar);
+
+					if (addresses.Length == 0)
+					{
+						throw new Exception(String.Format("Unable to resolve host \"{0}\"", parameters.host));
+					}
+
+					bool done = false;
+					bool cancelled = false;
+					for (int i = 0; i < addresses.Length && !done && !cancelled; i++)
+					{
+						IPAddress address = addresses[i];
+
+						if (address.AddressFamily == AddressFamily.InterNetwork)
+						{
+							// Initialize a new socket
+							socket4 = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+
+							// Allow delegate to configure the socket if needed
+							if (OnSocketWillConnect(socket4))
+							{
+								// Attempt to connect with the given information
+								socket4.BeginConnect(address, parameters.port, new AsyncCallback(socket_DidConnect), socket4);
+
+								// Stop looping through addresses
+								done = true;
+							}
+							else
+							{
+								cancelled = true;
+							}
+						}
+						else if (address.AddressFamily == AddressFamily.InterNetworkV6)
+						{
+							if (Socket.OSSupportsIPv6)
+							{
+								// Initialize a new socket
+								socket6 = new Socket(AddressFamily.InterNetworkV6, SocketType.Stream, ProtocolType.Tcp);
+
+								// Allow delegate to configure the socket if needed
+								if (OnSocketWillConnect(socket6))
+								{
+									// Attempt to connect with the given information
+									socket6.BeginConnect(address, parameters.port, new AsyncCallback(socket_DidConnect), socket6);
+
+									// Stop looping through addresses
+									done = true;
+								}
+								else
+								{
+									cancelled = true;
+								}
+							}
+						}
+					}
+
+					if (cancelled)
+					{
+						throw new Exception("Connection attempt cancelled in WillConnect delegate");
+					}
+
+					if (!done)
+					{
+						String format = "Unable to resolve host \"{0}\" to valid IPv4 or IPv6 address";
+						throw new Exception(String.Format(format, parameters.host));
+					}
+				}
+				catch(Exception e)
+				{
+					CloseWithException(e);
+				}
+			}
+		}
+
+		/// <summary>
 		/// Callback method when socket has connected (or was unable to connect).
 		/// 
 		/// This method is thread safe.
 		/// </summary>
 		/// <param name="iar">
-		///		The state of the IAsyncResult refers to the socke that called BeginConnect().
+		///		The state of the IAsyncResult refers to the socket that called BeginConnect().
 		/// </param>
 		private void socket_DidConnect(IAsyncResult iar)
 		{
@@ -962,6 +1114,17 @@ namespace Deusty.Net
 					flags |= kDidCallConnectDelegate;
 					OnSocketDidConnect(RemoteAddress, RemotePort);
 
+					// Cancel the connect timer
+					if (connectTimer != null)
+					{
+						connectTimer.Dispose();
+						connectTimer = null;
+
+						// The connect timer may have already fired.
+						// To make sure it has no effect, we also clear the dnsGuid.
+						dnsGuid = Guid.Empty;
+					}
+
 					// Immediately deal with any already-queued requests.
 					MaybeDequeueRead();
 					MaybeDequeueWrite();
@@ -969,6 +1132,26 @@ namespace Deusty.Net
 				catch (Exception e)
 				{
 					CloseWithException(e);
+				}
+			}
+		}
+
+		/// <summary>
+		/// Called after a connect timeout timer fires.
+		/// This will generally fire on an available thread from the thread pool.
+		/// 
+		/// This method is thread safe.
+		/// </summary>
+		/// <param name="state">state is guid at time of timer start</param>
+		private void socket_DidNotConnect(object state)
+		{
+			lock (lockObj)
+			{
+				Guid guid = (Guid)state;
+
+				if (guid == dnsGuid)
+				{
+					CloseWithException(GetConnectTimeoutException());
 				}
 			}
 		}
@@ -1219,6 +1402,7 @@ namespace Deusty.Net
 		private void Close()
 		{
 			flags |= kStop;
+			dnsGuid = Guid.Empty;
 
 			EmptyQueues();
 
@@ -1250,7 +1434,7 @@ namespace Deusty.Net
 				socket4 = null;
 			}
 
-			if ((flags & kDidCallConnectDelegate) > 0)
+			if ((flags & kDidPassConnectMethod) > 0)
 			{
 				// Remove all flags except stop flag
 				flags = kStop;
@@ -1379,6 +1563,11 @@ namespace Deusty.Net
 		private Exception GetEndOfStreamException()
 		{
 			return new Exception("Socket reached end of stream.");
+		}
+
+		private Exception GetConnectTimeoutException()
+		{
+			return new Exception("Connect operation timed out.");
 		}
 
 		private Exception GetReadTimeoutException()
@@ -2082,7 +2271,7 @@ namespace Deusty.Net
 		///		The object will be properly handled regardless of whether it's a stream or raw bytes.
 		/// </param>
 		/// <param name="timeout">
-		///		Timeout in milliseconds. Specify a negative value if no timeout is desired.	
+		///		Timeout in milliseconds. Specify a negative value if no timeout is desired.
 		/// </param>
 		/// <param name="tag">
 		///		A tag that can be used to track the write.
