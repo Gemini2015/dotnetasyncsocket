@@ -57,14 +57,14 @@ namespace Deusty.Net
 		private const int WRITE_CHUNKSIZE   = (32 * 256);
 
 		private volatile byte flags;
-		private const byte kDidPassConnectMethod   =   1; // If set, disconnection results in delegate call.
-		private const byte kDidCallConnectDelegate =   2; // If set, connect delegate has been called.
-		private const byte kPauseReads             =   4; // If set, reads are not dequeued until further notice.
-		private const byte kPauseWrites            =   8; // If set, writes are not dequeued until further notice.
-		private const byte kForbidReadsWrites      =  16; // If set, no new reads or writes are allowed.
-		private const byte kDisconnectAfterReads   =  32; // If set, disconnect as soon as no more reads are queued.
-		private const byte kDisconnectAfterWrites  =  64; // If set, disconnect as soon as no more writes are queued.
-		private const byte kStop                   = 128; // If set, sockets are closing or closed.
+		private const byte kDidPassConnectMethod   = 1 << 0; // If set, disconnection results in delegate call.
+		private const byte kDidCallConnectDelegate = 1 << 1; // If set, connect delegate has been called.
+		private const byte kPauseReads             = 1 << 2; // If set, reads are not dequeued until further notice.
+		private const byte kPauseWrites            = 1 << 3; // If set, writes are not dequeued until further notice.
+		private const byte kForbidReadsWrites      = 1 << 4; // If set, no new reads or writes are allowed.
+		private const byte kDisconnectAfterReads   = 1 << 5; // If set, disconnect as soon as no more reads are queued.
+		private const byte kDisconnectAfterWrites  = 1 << 6; // If set, disconnect as soon as no more writes are queued.
+		private const byte kStop                   = 1 << 7; // If set, sockets are closing or closed.
 
 		private Queue readQueue;
 		private Queue writeQueue;
@@ -402,17 +402,21 @@ namespace Deusty.Net
 		///	</returns>
 		protected object Invoke(Delegate method, params object[] args)
 		{
-			System.ComponentModel.ISynchronizeInvoke invokeable = GetInvokeObject();
-
-			if (invokeable != null)
+			try
 			{
-				return invokeable.Invoke(method, args);
-			}
+				System.ComponentModel.ISynchronizeInvoke invokeable = GetInvokeObject();
 
-			if (mAllowMultithreadedCallbacks)
-			{
-				return method.DynamicInvoke(args);
+				if (invokeable != null)
+				{
+					return invokeable.Invoke(method, args);
+				}
+
+				if (mAllowMultithreadedCallbacks)
+				{
+					return method.DynamicInvoke(args);
+				}
 			}
+			catch { }
 
 			return null;
 		}
@@ -811,8 +815,8 @@ namespace Deusty.Net
 
 			// Immediately deal with any already-queued requests.
 			// Notice that we delay the call to allow execution in socket_DidAccept().
-			ScheduleDequeueRead();
-			ScheduleDequeueWrite();
+			ThreadPool.QueueUserWorkItem(new WaitCallback(MaybeDequeueRead));
+			ThreadPool.QueueUserWorkItem(new WaitCallback(MaybeDequeueWrite));
 		}
 
 		///////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1126,8 +1130,8 @@ namespace Deusty.Net
 					}
 
 					// Immediately deal with any already-queued requests.
-					MaybeDequeueRead();
-					MaybeDequeueWrite();
+					MaybeDequeueRead(null);
+					MaybeDequeueWrite(null);
 				}
 				catch (Exception e)
 				{
@@ -1212,9 +1216,9 @@ namespace Deusty.Net
 			readQueue.Enqueue(startTlsPacket);
 			writeQueue.Enqueue(startTlsPacket);
 
-			// Schedule immediate calls to MaybeDequeueRead and MaybeDequeueWrite without blocking
-			ScheduleDequeueRead();
-			ScheduleDequeueWrite();
+			// Queue calls to MaybeDequeueRead and MaybeDequeueWrite
+			ThreadPool.QueueUserWorkItem(new WaitCallback(MaybeDequeueRead));
+			ThreadPool.QueueUserWorkItem(new WaitCallback(MaybeDequeueWrite));
 		}
 		
 		/// <summary>
@@ -1249,9 +1253,9 @@ namespace Deusty.Net
 			readQueue.Enqueue(startTlsPacket);
 			writeQueue.Enqueue(startTlsPacket);
 
-			// Schedule immediate calls to MaybeDequeueRead and MaybeDequeueWrite without blocking
-			ScheduleDequeueRead();
-			ScheduleDequeueWrite();
+			// Queue calls to MaybeDequeueRead and MaybeDequeueWrite
+			ThreadPool.QueueUserWorkItem(new WaitCallback(MaybeDequeueRead));
+			ThreadPool.QueueUserWorkItem(new WaitCallback(MaybeDequeueWrite));
 		}
 
 		/// <summary>
@@ -1334,8 +1338,8 @@ namespace Deusty.Net
 					OnSocketDidSecure();
 					
 					// And finally, resume reading and writing
-					MaybeDequeueRead();
-					MaybeDequeueWrite();
+					MaybeDequeueRead(null);
+					MaybeDequeueWrite(null);
 				}
 				catch (Exception e)
 				{
@@ -1495,8 +1499,8 @@ namespace Deusty.Net
 		{
 			flags |= (kForbidReadsWrites | kDisconnectAfterReads);
 			
-			// Schedule an immediate call to MaybeDisconnect without blocking
-			ScheduleDisconnect();
+			// Queue a call to MaybeDisconnect
+			ThreadPool.QueueUserWorkItem(new WaitCallback(MaybeDisconnect));
 		}
 		
 		/// <summary>
@@ -1508,30 +1512,11 @@ namespace Deusty.Net
 		{
 			flags |= (kForbidReadsWrites | kDisconnectAfterWrites);
 			
-			// Schedule an immediate call to MaybeDisconnect without blocking
-			ScheduleDisconnect();
+			// Queue a call to MaybeDisconnect
+			ThreadPool.QueueUserWorkItem(new WaitCallback(MaybeDisconnect));
 		}
 		
-		/// <summary>
-		/// Schedules a call to MaybeDisconnect without blocking.
-		/// </summary>
-		private void ScheduleDisconnect()
-		{
-			// Create a timer that will fire immediately on a seperate thread in the thread pool
-			new System.Threading.Timer(new TimerCallback(UnscheduleDisconnect), null, 0, Timeout.Infinite);
-		}
-		
-		/// <summary>
-		/// Called as a result of a call to ScheduleDisconnect().
-		/// This method is called on a background (worker) thread.
-		/// </summary>
-		/// <param name="state">Not used</param>
-		private void UnscheduleDisconnect(Object state)
-		{
-			MaybeDisconnect();
-		}
-		
-		private void MaybeDisconnect()
+		private void MaybeDisconnect(object ignore)
 		{
 			lock (lockObj)
 			{
@@ -1788,8 +1773,8 @@ namespace Deusty.Net
 			// readQueue is synchronized
 			readQueue.Enqueue(new AsyncReadPacket(buffer, timeout, tag, true, false, null));
 
-			// We schedule an immediate call to MaybeDequeueRead without blocking
-			ScheduleDequeueRead();
+			// Queue a call to maybeDequeueRead
+			ThreadPool.QueueUserWorkItem(new WaitCallback(MaybeDequeueRead));
 		}
 
 		/// <summary>
@@ -1815,8 +1800,8 @@ namespace Deusty.Net
 			// readQueue is synchronized
 			readQueue.Enqueue(new AsyncReadPacket(buffer, timeout, tag, false, true, null));
 
-			// We schedule an immediate call to maybeDequeueRead without blocking
-			ScheduleDequeueRead();
+			// Queue a call to maybeDequeueRead
+			ThreadPool.QueueUserWorkItem(new WaitCallback(MaybeDequeueRead));
 		}
 
 		/// <summary>
@@ -1847,27 +1832,8 @@ namespace Deusty.Net
 			// readQueue is synchronized
 			readQueue.Enqueue(new AsyncReadPacket(buffer, timeout, tag, false, false, term));
 
-			// We schedule an immediate call to maybeDequeueRead without blocking
-			ScheduleDequeueRead();
-		}
-
-		/// <summary>
-		/// Schedules a call to MaybeDequeueRead without blocking.
-		/// </summary>
-		private void ScheduleDequeueRead()
-		{
-			// Create a timer that will fire immediately on a seperate thread in the thread pool
-			new System.Threading.Timer(new TimerCallback(UnscheduleDequeueRead), null, 0, Timeout.Infinite);
-		}
-
-		/// <summary>
-		/// Called as a result of a call to ScheduleDequeueRead().
-		/// This method is called on a background (worker) thread.
-		/// </summary>
-		/// <param name="state">Not used</param>
-		private void UnscheduleDequeueRead(object state)
-		{
-			MaybeDequeueRead();
+			// Queue a call to MaybeDequeueRead
+			ThreadPool.QueueUserWorkItem(new WaitCallback(MaybeDequeueRead));
 		}
 
 		/// <summary>
@@ -1879,7 +1845,7 @@ namespace Deusty.Net
 		/// 
 		/// This method is thread safe.
 		/// </summary>
-		private void MaybeDequeueRead()
+		private void MaybeDequeueRead(object ignore)
 		{
 			lock (lockObj)
 			{
@@ -2208,7 +2174,7 @@ namespace Deusty.Net
 				currentRead.buffer.SetLength(currentRead.bytesDone);
 
 				CompleteCurrentRead();
-				ScheduleDequeueRead();
+				ThreadPool.QueueUserWorkItem(new WaitCallback(MaybeDequeueRead));
 			}
 			else
 			{
@@ -2281,27 +2247,11 @@ namespace Deusty.Net
 		{
 			if (data.Length == 0) return;
 
+			// writeQueue is synchronized
 			writeQueue.Enqueue(new AsyncWritePacket(data, 0, timeout, tag));
-			ScheduleDequeueWrite();
-		}
 
-		/// <summary>
-		/// Schedules a call to MaybeDequeueWrite without blocking.
-		/// </summary>
-		private void ScheduleDequeueWrite()
-		{
-			// Create a timer that will fire immediately on a seperate thread in the thread pool
-			new System.Threading.Timer(new TimerCallback(UnscheduleDequeueWrite), null, 0, Timeout.Infinite);
-		}
-
-		/// <summary>
-		/// Called as a result of a call to ScheduleDequeueWrite().
-		/// This method is called on a background (worker) thread.
-		/// </summary>
-		/// <param name="state">Not used</param>
-		private void UnscheduleDequeueWrite(object state)
-		{
-			MaybeDequeueWrite();
+			// Queue a call to MaybeDequeueWrite
+			ThreadPool.QueueUserWorkItem(new WaitCallback(MaybeDequeueWrite));
 		}
 
 		/// <summary>
@@ -2313,7 +2263,7 @@ namespace Deusty.Net
 		/// 
 		/// This method is thread safe.
 		/// </summary>
-		private void MaybeDequeueWrite()
+		private void MaybeDequeueWrite(object ignore)
 		{
 			lock (lockObj)
 			{
@@ -2402,7 +2352,7 @@ namespace Deusty.Net
 						if (currentWrite.bytesDone == currentWrite.buffer.Length)
 						{
 							CompleteCurrentWrite();
-							ScheduleDequeueWrite();
+							ThreadPool.QueueUserWorkItem(new WaitCallback(MaybeDequeueWrite));
 						}
 						else
 						{
@@ -2447,7 +2397,7 @@ namespace Deusty.Net
 		/// 
 		/// More specifically, it is called from either:
 		///  A) MaybeDequeueWrite()
-		///  B) socket_DidSend()
+		///  B) stream_DidWrite()
 		/// 
 		/// The above methods are thread safe, so this method is inherently thread safe.
 		/// It is not explicitly thread safe though, and should not be called outside the above named methods.
