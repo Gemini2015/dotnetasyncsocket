@@ -377,6 +377,37 @@ namespace Deusty.Net
 		}
 
 		/// <summary>
+		/// Converts the data to a hexadecimal string format for easy displaying or saving.
+		/// </summary>
+		public static string ToHexString(byte[] bytes)
+		{
+			if (bytes == null) return null;
+
+			// I can't seem to find a simple way (one-liner) to convert from a byte array to a hex string.
+			// Looping seems to be the only option, and this technique is faster than using StringBuilder.
+
+			char[] hexDigits = { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f' };
+
+			char[] chars = new char[bytes.Length * 2];
+
+			for (int i = 0; i < bytes.Length; i++)
+			{
+				int b = bytes[i];
+				chars[i * 2] = hexDigits[b >> 4];
+				chars[i * 2 + 1] = hexDigits[b & 0xF];
+			}
+			return new String(chars);
+		}
+
+		/// <summary>
+		/// Converts the data to a hexadecimal string format.
+		/// </summary>
+		public string ToHexString()
+		{
+			return Data.ToHexString(buffer);
+		}
+
+		/// <summary>
 		/// Writes the data to the given filepath.
 		/// If the file doesn't exist, it is created.
 		/// If it does exist, it is overwritten.
