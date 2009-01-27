@@ -49,12 +49,13 @@ namespace Deusty.Net
 
 		private const int INIT_READQUEUE_CAPACITY = 5;
 		private const int INIT_WRITEQUEUE_CAPACITY = 5;
+		private const int INIT_EVENTQUEUE_CAPACITY = 5;
 
 		private const int CONNECTION_QUEUE_CAPACITY = 10;
 
-		private const int READ_CHUNKSIZE    = (32 * 256);
-		private const int READALL_CHUNKSIZE = (64 * 256);
-		private const int WRITE_CHUNKSIZE   = (32 * 256);
+		private const int READ_CHUNKSIZE    = (1024 * 16);
+		private const int READALL_CHUNKSIZE = (1024 * 32);
+		private const int WRITE_CHUNKSIZE   = (1024 * 32);
 
 		private volatile byte flags;
 		private const byte kDidPassConnectMethod   = 1 << 0; // If set, disconnection results in delegate call.
@@ -68,6 +69,7 @@ namespace Deusty.Net
 
 		private Queue readQueue;
 		private Queue writeQueue;
+		private Queue eventQueue;
 
 		private AsyncReadPacket currentRead;
 		private AsyncWritePacket currentWrite;
@@ -207,6 +209,7 @@ namespace Deusty.Net
 			// Initialize read and write queues (thread safe)
 			readQueue = Queue.Synchronized(new Queue(INIT_READQUEUE_CAPACITY));
 			writeQueue = Queue.Synchronized(new Queue(INIT_WRITEQUEUE_CAPACITY));
+			eventQueue = Queue.Synchronized(new Queue(INIT_WRITEQUEUE_CAPACITY));
 		}
 
 		private Object mTag;
@@ -223,89 +226,7 @@ namespace Deusty.Net
 			set { mTag = value; }
 		}
 
-		protected virtual void OnSocketWillDisconnect(Exception e)
-		{
-			if(WillDisconnect != null)
-			{
-				Invoke(WillDisconnect, this, e);
-			}
-		}
-
-		protected virtual void OnSocketDidDisconnect()
-		{
-			if (DidDisconnect != null)
-			{
-				Invoke(DidDisconnect, this);
-			}
-		}
-
-		protected virtual void OnSocketDidAccept(AsyncSocket newSocket)
-		{
-			if (DidAccept != null)
-			{
-				Invoke(DidAccept, this, newSocket);
-			}
-		}
-
-		protected virtual bool OnSocketWillConnect(Socket socket)
-		{
-			if (WillConnect != null)
-			{
-				return (bool)Invoke(WillConnect, this, socket);
-			}
-
-			return true;
-		}
-
-		protected virtual void OnSocketDidConnect(IPAddress address, UInt16 port)
-		{
-			if (DidConnect != null)
-			{
-				Invoke(DidConnect, this, address, port);
-			}
-		}
-
-		protected virtual void OnSocketDidRead(Data data, long tag)
-		{
-			if (DidRead != null)
-			{
-				Invoke(DidRead, this, data, tag);
-			}
-		}
-
-		protected virtual void OnSocketDidReadPartial(int partialLength, long tag)
-		{
-			if (DidReadPartial != null)
-			{
-				Invoke(DidReadPartial, this, partialLength, tag);
-			}
-		}
-
-		protected virtual void OnSocketDidWrite(long tag)
-		{
-			if (DidWrite != null)
-			{
-				Invoke(DidWrite, this, tag);
-			}
-		}
-
-		protected virtual void OnSocketDidWritePartial(int partialLength, long tag)
-		{
-			if (DidWritePartial != null)
-			{
-				Invoke(DidWritePartial, this, partialLength, tag);
-			}
-		}
-
-		protected virtual void OnSocketDidSecure()
-		{
-			if (DidSecure != null)
-			{
-				Invoke(DidSecure, this);
-			}
-		}
-		
-		private System.ComponentModel.ISynchronizeInvoke mSynchronizingObject = null;
+		private System.ComponentModel.ISynchronizeInvoke synchronizingObject = null;
 		/// <summary>
 		/// Set the <see cref="System.ComponentModel.ISynchronizeInvoke">ISynchronizeInvoke</see>
 		/// object to use as the invoke object. When returning results from asynchronous calls,
@@ -318,11 +239,11 @@ namespace Deusty.Net
 		/// </remarks>
 		public System.ComponentModel.ISynchronizeInvoke SynchronizingObject
 		{
-			get { return mSynchronizingObject; }
-			set { mSynchronizingObject = value; }
+			get { return synchronizingObject; }
+			set { synchronizingObject = value; }
 		}
 
-		private bool mAllowApplicationForms = true;
+		private bool allowApplicationForms = true;
 		/// <summary>
 		/// Allows the application to attempt to post async replies over the
 		/// application "main loop" by using the message queue of the first available
@@ -333,11 +254,11 @@ namespace Deusty.Net
 		/// </summary>
 		public bool AllowApplicationForms
 		{
-			get { return mAllowApplicationForms; }
-			set { mAllowApplicationForms = value; }
+			get { return allowApplicationForms; }
+			set { allowApplicationForms = value; }
 		}
 
-		private bool mAllowMultithreadedCallbacks = false;
+		private bool allowMultithreadedCallbacks = false;
 		/// <summary>
 		/// If set to true, <see cref="AllowApplicationForms">AllowApplicationForms</see>
 		/// is set to false and <see cref="SynchronizingObject">SynchronizingObject</see> is set
@@ -351,72 +272,464 @@ namespace Deusty.Net
 		/// </remarks>
 		public bool AllowMultithreadedCallbacks
 		{
-			get { return mAllowMultithreadedCallbacks; }
+			get { return allowMultithreadedCallbacks; }
 			set
 			{
-				mAllowMultithreadedCallbacks = value;
-				if (mAllowMultithreadedCallbacks)
+				allowMultithreadedCallbacks = value;
+				if (allowMultithreadedCallbacks)
 				{
-					mAllowApplicationForms = false;
-					mSynchronizingObject = null;
+					allowApplicationForms = false;
+					synchronizingObject = null;
 				}
 			}
 		}
 
-		/// <summary>
-		/// Helper method to obtain a proper invokeable object.
-		/// If an invokeable object is set, it's immediately returned.
-		/// Otherwise, an open windows form is returned if available.
-		/// </summary>
-		/// <returns>An invokeable object, or null if none available.</returns>
-		private System.ComponentModel.ISynchronizeInvoke GetInvokeObject()
+		protected virtual void OnSocketWillDisconnect(Exception e)
 		{
-			if (mSynchronizingObject != null) return mSynchronizingObject;
-
-			if (mAllowApplicationForms)
+			if(WillDisconnect != null)
 			{
-				// Need to post it over control thread
-				System.Windows.Forms.FormCollection forms = System.Windows.Forms.Application.OpenForms;
-
-				if (forms != null && forms.Count > 0)
+				if (synchronizingObject != null)
 				{
-					System.Windows.Forms.Control control = forms[0];
-					return control;
+					if (synchronizingObject is System.Windows.Forms.Control)
+					{
+						object[] args = { this, e };
+						synchronizingObject.BeginInvoke(WillDisconnect, args);
+					}
+					else
+					{
+						object[] delPlusArgs = { WillDisconnect, this, e };
+						eventQueue.Enqueue(delPlusArgs);
+						ThreadPool.QueueUserWorkItem(new WaitCallback(DoInvoke));
+					}
+				}
+				else if (allowApplicationForms)
+				{
+					System.Windows.Forms.Form appForm = GetApplicationForm();
+					if (appForm != null)
+					{
+						appForm.BeginInvoke(WillDisconnect, this, e);
+					}
+				}
+				else if (allowMultithreadedCallbacks)
+				{
+					WillDisconnect.BeginInvoke(this, e, new AsyncCallback(FinishWillDisconnect), null);
 				}
 			}
-			return null;
 		}
 
-		/// <summary>
-		/// Calls a method using the objects invokable object (if provided).
-		/// Otherwise, it simply invokes the method normally.
-		/// </summary>
-		/// <param name="method">
-		///		The method to call.
-		/// </param>
-		/// <param name="args">
-		///		The arguments to call the method with.
-		/// </param>
-		/// <returns>
-		///		The result returned from method, or null if the method could not be invoked.
-		///	</returns>
-		protected object Invoke(Delegate method, params object[] args)
+		protected virtual void OnSocketDidDisconnect()
+		{
+			if (DidDisconnect != null)
+			{
+				if (synchronizingObject != null)
+				{
+					if (synchronizingObject is System.Windows.Forms.Control)
+					{
+						object[] args = { this };
+						synchronizingObject.BeginInvoke(DidDisconnect, args);
+					}
+					else
+					{
+						object[] delPlusArgs = { DidDisconnect, this };
+						eventQueue.Enqueue(delPlusArgs);
+						ThreadPool.QueueUserWorkItem(new WaitCallback(DoInvoke));
+					}
+				}
+				else if (allowApplicationForms)
+				{
+					System.Windows.Forms.Form appForm = GetApplicationForm();
+					if (appForm != null)
+					{
+						appForm.BeginInvoke(DidDisconnect, this);
+					}
+				}
+				else if (allowMultithreadedCallbacks)
+				{
+					DidDisconnect.BeginInvoke(this, new AsyncCallback(FinishWillDisconnect), null);
+				}
+			}
+		}
+
+		protected virtual void OnSocketDidAccept(AsyncSocket newSocket)
+		{
+			if (DidAccept != null)
+			{
+				if (synchronizingObject != null)
+				{
+					if (synchronizingObject is System.Windows.Forms.Control)
+					{
+						object[] args = { this, newSocket };
+						synchronizingObject.BeginInvoke(DidAccept, args);
+					}
+					else
+					{
+						object[] delPlusArgs = { DidAccept, this, newSocket };
+						eventQueue.Enqueue(delPlusArgs);
+						ThreadPool.QueueUserWorkItem(new WaitCallback(DoInvoke));
+					}
+				}
+				else if (allowApplicationForms)
+				{
+					System.Windows.Forms.Form appForm = GetApplicationForm();
+					if (appForm != null)
+					{
+						appForm.BeginInvoke(DidAccept, this, newSocket);
+					}
+				}
+				else if (allowMultithreadedCallbacks)
+				{
+					DidAccept.BeginInvoke(this, newSocket, new AsyncCallback(FinishDidAccept), null);
+				}
+			}
+		}
+
+		protected virtual bool OnSocketWillConnect(Socket socket)
+		{
+			if (WillConnect != null)
+			{
+				object[] args = { this, socket };
+
+				if (synchronizingObject != null)
+				{
+					return (bool)synchronizingObject.Invoke(WillConnect, args);
+				}
+				else if (allowApplicationForms)
+				{
+					System.Windows.Forms.Form appForm = GetApplicationForm();
+					if (appForm != null)
+					{
+						return (bool)appForm.Invoke(WillConnect, args);
+					}
+				}
+				else if (allowMultithreadedCallbacks)
+				{
+					return (bool)WillConnect.DynamicInvoke(args);
+				}
+			}
+
+			return true;
+		}
+
+		protected virtual void OnSocketDidConnect(IPAddress address, UInt16 port)
+		{
+			if (DidConnect != null)
+			{
+				if (synchronizingObject != null)
+				{
+					if (synchronizingObject is System.Windows.Forms.Control)
+					{
+						object[] args = { this, address, port };
+						synchronizingObject.BeginInvoke(DidConnect, args);
+					}
+					else
+					{
+						object[] delPlusArgs = { DidConnect, this, address, port };
+						eventQueue.Enqueue(delPlusArgs);
+						ThreadPool.QueueUserWorkItem(new WaitCallback(DoInvoke));
+					}
+				}
+				else if (allowApplicationForms)
+				{
+					System.Windows.Forms.Form appForm = GetApplicationForm();
+					if (appForm != null)
+					{
+						appForm.BeginInvoke(DidConnect, this, address, port);
+					}
+				}
+				else if (allowMultithreadedCallbacks)
+				{
+					DidConnect.BeginInvoke(this, address, port, new AsyncCallback(FinishDidConnect), null);
+				}
+			}
+		}
+
+		protected virtual void OnSocketDidRead(Data data, long tag)
+		{
+			if (DidRead != null)
+			{
+				if (synchronizingObject != null)
+				{
+					if (synchronizingObject is System.Windows.Forms.Control)
+					{
+						object[] args = { this, data, tag };
+						synchronizingObject.BeginInvoke(DidRead, args);
+					}
+					else
+					{
+						object[] delPlusArgs = { DidRead, this, data, tag };
+						eventQueue.Enqueue(delPlusArgs);
+						ThreadPool.QueueUserWorkItem(new WaitCallback(DoInvoke));
+					}
+				}
+				else if (allowApplicationForms)
+				{
+					System.Windows.Forms.Form appForm = GetApplicationForm();
+					if (appForm != null)
+					{
+						appForm.BeginInvoke(DidRead, this, data, tag);
+					}
+				}
+				else if (allowMultithreadedCallbacks)
+				{
+					DidRead.BeginInvoke(this, data, tag, new AsyncCallback(FinishDidRead), null);
+				}
+			}
+		}
+
+		protected virtual void OnSocketDidReadPartial(int partialLength, long tag)
+		{
+			if (DidReadPartial != null)
+			{
+				if (synchronizingObject != null)
+				{
+					if (synchronizingObject is System.Windows.Forms.Control)
+					{
+						object[] args = { this, partialLength, tag };
+						synchronizingObject.BeginInvoke(DidReadPartial, args);
+					}
+					else
+					{
+						object[] delPlusArgs = { DidReadPartial, this, partialLength, tag };
+						eventQueue.Enqueue(delPlusArgs);
+						ThreadPool.QueueUserWorkItem(new WaitCallback(DoInvoke));
+					}
+				}
+				else if (allowApplicationForms)
+				{
+					System.Windows.Forms.Form appForm = GetApplicationForm();
+					if (appForm != null)
+					{
+						appForm.BeginInvoke(DidReadPartial, this, partialLength, tag);
+					}
+				}
+				else if (allowMultithreadedCallbacks)
+				{
+					DidReadPartial.BeginInvoke(this, partialLength, tag, new AsyncCallback(FinishDidReadPartial), null);
+				}
+			}
+		}
+
+		protected virtual void OnSocketDidWrite(long tag)
+		{
+			if (DidWrite != null)
+			{
+				if (synchronizingObject != null)
+				{
+					if (synchronizingObject is System.Windows.Forms.Control)
+					{
+						object[] args = { this, tag };
+						synchronizingObject.BeginInvoke(DidWrite, args);
+					}
+					else
+					{
+						object[] delPlusArgs = { DidWrite, this, tag };
+						eventQueue.Enqueue(delPlusArgs);
+						ThreadPool.QueueUserWorkItem(new WaitCallback(DoInvoke));
+					}
+				}
+				else if (allowApplicationForms)
+				{
+					System.Windows.Forms.Form appForm = GetApplicationForm();
+					if (appForm != null)
+					{
+						appForm.BeginInvoke(DidWrite, this, tag);
+					}
+				}
+				else if (allowMultithreadedCallbacks)
+				{
+					DidWrite.BeginInvoke(this, tag, new AsyncCallback(FinishDidWrite), null);
+				}
+			}
+		}
+
+		protected virtual void OnSocketDidWritePartial(int partialLength, long tag)
+		{
+			if (DidWritePartial != null)
+			{
+				if (synchronizingObject != null)
+				{
+					if (synchronizingObject is System.Windows.Forms.Control)
+					{
+						object[] args = { this, partialLength, tag };
+						synchronizingObject.BeginInvoke(DidWritePartial, args);
+					}
+					else
+					{
+						object[] delPlusArgs = { DidWritePartial, this, partialLength, tag };
+						eventQueue.Enqueue(delPlusArgs);
+						ThreadPool.QueueUserWorkItem(new WaitCallback(DoInvoke));
+					}
+				}
+				else if (allowApplicationForms)
+				{
+					System.Windows.Forms.Form appForm = GetApplicationForm();
+					if (appForm != null)
+					{
+						appForm.BeginInvoke(DidWritePartial, this, partialLength, tag);
+					}
+				}
+				else if (allowMultithreadedCallbacks)
+				{
+					DidWritePartial.BeginInvoke(this, partialLength, tag, new AsyncCallback(FinishDidWritePartial), null);
+				}
+			}
+		}
+
+		protected virtual void OnSocketDidSecure()
+		{
+			if (DidSecure != null)
+			{
+				if (synchronizingObject != null)
+				{
+					if (synchronizingObject is System.Windows.Forms.Control)
+					{
+						object[] args = { this };
+						synchronizingObject.BeginInvoke(DidSecure, args);
+					}
+					else
+					{
+						object[] delPlusArgs = { DidSecure, this };
+						eventQueue.Enqueue(delPlusArgs);
+						ThreadPool.QueueUserWorkItem(new WaitCallback(DoInvoke));
+					}
+				}
+				else if (allowApplicationForms)
+				{
+					System.Windows.Forms.Form appForm = GetApplicationForm();
+					if (appForm != null)
+					{
+						appForm.BeginInvoke(DidSecure, this);
+					}
+				}
+				else if (allowMultithreadedCallbacks)
+				{
+					DidSecure.BeginInvoke(this, new AsyncCallback(FinishDidSecure), null);
+				}
+			}
+		}
+
+		private void DoInvoke(object ignore)
+		{
+			lock (eventQueue)
+			{
+				try
+				{
+					object[] delPlusArgs = (object[])eventQueue.Dequeue();
+					object[] args = new object[delPlusArgs.Length - 1];
+
+					Delegate del = (Delegate)delPlusArgs[0];
+					Array.Copy(delPlusArgs, 1, args, 0, delPlusArgs.Length - 1);
+
+					if (synchronizingObject != null)
+					{
+						synchronizingObject.Invoke(del, args);
+					}
+					else if (allowApplicationForms)
+					{
+						System.Windows.Forms.Form appForm = GetApplicationForm();
+						if (appForm != null)
+						{
+							appForm.Invoke(del, args);
+						}
+					}
+					else if (allowMultithreadedCallbacks)
+					{
+						del.DynamicInvoke(args);
+					}
+				}
+				catch { }
+			}
+		}
+
+		private void FinishWillDisconnect(IAsyncResult iar)
 		{
 			try
 			{
-				System.ComponentModel.ISynchronizeInvoke invokeable = GetInvokeObject();
-
-				if (invokeable != null)
-				{
-					return invokeable.Invoke(method, args);
-				}
-
-				if (mAllowMultithreadedCallbacks)
-				{
-					return method.DynamicInvoke(args);
-				}
+				WillDisconnect.EndInvoke(iar);
 			}
 			catch { }
+		}
+
+		private void FinishDidDisconnect(IAsyncResult iar)
+		{
+			try
+			{
+				DidDisconnect.EndInvoke(iar);
+			}
+			catch { }
+		}
+
+		private void FinishDidAccept(IAsyncResult iar)
+		{
+			try
+			{
+				DidAccept.EndInvoke(iar);
+			}
+			catch { }
+		}
+
+		private void FinishDidConnect(IAsyncResult iar)
+		{
+			try
+			{
+				DidConnect.EndInvoke(iar);
+			}
+			catch { }
+		}
+
+		private void FinishDidRead(IAsyncResult iar)
+		{
+			try
+			{
+				DidRead.EndInvoke(iar);
+			}
+			catch { }
+		}
+
+		private void FinishDidReadPartial(IAsyncResult iar)
+		{
+			try
+			{
+				DidReadPartial.EndInvoke(iar);
+			}
+			catch { }
+		}
+
+		private void FinishDidWrite(IAsyncResult iar)
+		{
+			try
+			{
+				DidWrite.EndInvoke(iar);
+			}
+			catch { }
+		}
+
+		private void FinishDidWritePartial(IAsyncResult iar)
+		{
+			try
+			{
+				DidWritePartial.EndInvoke(iar);
+			}
+			catch { }
+		}
+
+		private void FinishDidSecure(IAsyncResult iar)
+		{
+			try
+			{
+				DidSecure.EndInvoke(iar);
+			}
+			catch { }
+		}
+
+		private System.Windows.Forms.Form GetApplicationForm()
+		{
+			System.Windows.Forms.FormCollection forms = System.Windows.Forms.Application.OpenForms;
+
+			if (forms != null && forms.Count > 0)
+			{
+				return forms[0];
+			}
 
 			return null;
 		}
@@ -1921,6 +2234,7 @@ namespace Deusty.Net
 		private void DoReadOverflow()
 		{
 			Debug.Assert(currentRead.bytesDone == 0);
+			Debug.Assert(readOverflow.Length > 0);
 
 			if (currentRead.readAllAvailableData)
 			{
@@ -2010,6 +2324,12 @@ namespace Deusty.Net
 				if (thisRead.readAllAvailableData)
 				{
 					size = READALL_CHUNKSIZE;
+
+					// Ensure the buffer is big enough to fit all the data
+					if (thisRead.buffer.Length < (thisRead.bytesDone + size))
+					{
+						thisRead.buffer.SetLength(thisRead.bytesDone + size);
+					}
 				}
 				else if (thisRead.fixedLengthRead)
 				{
@@ -2028,12 +2348,12 @@ namespace Deusty.Net
 				{
 					// We're reading up to a termination sequence
 					size = READ_CHUNKSIZE;
-				}
 
-				// Ensure the buffer is big enough to fit all the data
-				if (thisRead.buffer.Length < (thisRead.bytesDone + size))
-				{
-					thisRead.buffer.SetLength(thisRead.bytesDone + size);
+					// Ensure the buffer is big enough to fit all the data
+					if (thisRead.buffer.Length < (thisRead.bytesDone + size))
+					{
+						thisRead.buffer.SetLength(thisRead.bytesDone + size);
+					}
 				}
 
 				thisRead.iar = stream.BeginRead(thisRead.buffer.ByteArray,         // buffer to read data into

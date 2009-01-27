@@ -4,6 +4,7 @@ using System.ComponentModel;
 using System.Data;
 using System.Drawing;
 using System.Net.Security;
+using System.Net.Sockets;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Windows.Forms;
@@ -49,6 +50,10 @@ namespace HttpTest
 
 		// Used to keep track of current stage in chunked trasfer
 		private uint chunkedTransferStage;
+
+		// Used to time how long the download takes, from connected to finished downloading
+		private int headerLength;
+		private DateTime startTime;
 		
 
 		public Form1()
@@ -102,9 +107,9 @@ namespace HttpTest
 		{
 			fetchButton.Enabled = false;
 			sslCheckBox.Enabled = false;
-
+					
 			logRichTextBox.Clear();
-
+			
 			if(sslCheckBox.Checked)
 				asyncSocket.Connect(FETCH_HOST, 443);
 			else
@@ -141,6 +146,10 @@ namespace HttpTest
 
 		private void SendRequest()
 		{
+			// Record when we first started the download
+			headerLength = 0;
+			startTime = DateTime.Now;
+
 			// Create a HTTP request using the Deusty.Net.HTTP.HTTPHeader class.
 			// The HTTP protocol is fairly straightforward, but this class helps hide protocol
 			// specific information that we're not really concerned with for this AsyncSocket sameple.
@@ -215,7 +224,7 @@ namespace HttpTest
 		{
 			// You can decide whether or not to accept the certificate here
 			Console.WriteLine("Remote Certificate: {0}", certificate);
-
+			Console.WriteLine("Public Key: {0}", Data.ToHexString(certificate.GetPublicKey()));
 			return true;
 		}
 
@@ -234,6 +243,8 @@ namespace HttpTest
 				// We read in one line of the http header response
 				// Do we have the full http header yet?
 
+				headerLength += data.Length;
+
 				response.AppendBytes(data.ByteArray);
 				if (!response.IsHeaderComplete())
 				{
@@ -242,7 +253,7 @@ namespace HttpTest
 				}
 				else
 				{
-					LogInfo("Received Response:");
+					LogInfo("Received Response: ({0} bytes)", headerLength);
 					LogMessage(response.ToString());
 
 					// Check the http status code
@@ -308,6 +319,9 @@ namespace HttpTest
 				LogInfo("\r\nDownload complete");
 				progressBar.Value = 100;
 
+				TimeSpan ellapsed = DateTime.Now - startTime;
+				LogInfo("\r\nTotal Time = {0:N} milliseconds", ellapsed.TotalMilliseconds);
+
 				LogInfo("Disconnecting...");
 				asyncSocket.Disconnect();
 			}
@@ -366,6 +380,10 @@ namespace HttpTest
 					else
 					{
 						LogInfo("\r\nDownload complete");
+
+						TimeSpan ellapsed = DateTime.Now - startTime;
+						LogInfo("\r\nTotal Time = {0:N} milliseconds", ellapsed.TotalMilliseconds);
+
 						LogInfo("Disconnecting...");
 						asyncSocket.Disconnect();
 					}
@@ -396,6 +414,44 @@ namespace HttpTest
 
 			fetchButton.Enabled = true;
 			sslCheckBox.Enabled = true;
+		}
+
+		private void TestSynchronousSocket()
+		{
+		//	Socket socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+		//	
+		//	LogInfo("Connecting...");
+		//	progressBar.Value = 0;
+		//
+		//	socket.Connect(FETCH_HOST, 80);
+		//
+		//	startTime = DateTime.Now;
+		//	LogInfo("Connected");
+		//
+		//	HTTPHeader request = HTTPHeader.CreateRequest("GET", FETCH_REQUEST);
+		//	request.SetHeaderFieldValue("Host", FETCH_HOST);
+		//
+		//	byte[] requestData = Encoding.UTF8.GetBytes(request.ToString());
+		//	
+		//	int sent = 0;
+		//	while (sent < requestData.Length)
+		//	{
+		//		sent += socket.Send(requestData, sent, requestData.Length - sent, SocketFlags.None);
+		//		LogInfo("Sent {0} bytes ({1})", sent, (sent / (float)requestData.Length));
+		//	}
+		//
+		//	byte[] responseData = new byte[/*headerLength + contentLength*/];
+		//
+		//	int received = 0;
+		//	while (received < responseData.Length)
+		//	{
+		//		received += socket.Receive(responseData, received, responseData.Length - received, SocketFlags.None);
+		//
+		//		progressBar.Value = (int)((received / (float)responseData.Length) * 100);
+		//	}
+		//	
+		//	TimeSpan ellapsed = DateTime.Now - startTime;
+		//	LogInfo("\r\nTotal Time = {0:N} milliseconds", ellapsed.TotalMilliseconds);
 		}
 	}
 }
