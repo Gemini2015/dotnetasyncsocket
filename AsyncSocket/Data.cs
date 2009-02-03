@@ -639,9 +639,9 @@ namespace Deusty.Net
 		/// and copies the bytes from the given data object into the mutable data array.
 		/// </summary>
 		/// <param name="data">
-		///		An IData object to copy bytes from.
+		///		A Data object to copy bytes from.
 		///	</param>
-		public void AppendData(IData data)
+		public void AppendData(Data data)
 		{
 			// We're not going to bother checking to see if data is null.
 			// The NullReferenceException will automatically get thrown for us if it is.
@@ -665,24 +665,9 @@ namespace Deusty.Net
 		/// <param name="length">
 		///		The amount to copy from the given data.
 		/// </param>
-		public void AppendData(IData data, int offset, int length)
+		public void AppendData(Data data, int offset, int length)
 		{
-			if (data.IsStream)
-			{
-				int amountRead = 0;
-				do
-				{
-					byte[] byteArray;
-					amountRead += data.ReadByteArray(out byteArray, offset, length);
-
-					AppendData(byteArray);
-
-				}while(amountRead < length);
-			}
-			else
-			{
-				AppendData(data.ByteArray, offset, length);
-			}
+			AppendData(data.ByteArray, offset, length);
 		}
 
 		/// <summary>
@@ -717,6 +702,91 @@ namespace Deusty.Net
 
 			Buffer.BlockCopy(buffer, 0, newBuffer, 0, buffer.Length);
 			Buffer.BlockCopy(byteArray, offset, newBuffer, buffer.Length, length);
+			buffer = newBuffer;
+		}
+
+		/// <summary>
+		/// This method automatically increases the length of the data by the proper length,
+		/// and copies the data from the given byte array into the underlying buffer.
+		/// The data is copied starting at the given offset up to the given length.
+		/// The data is inserted into the underlying buffer at the given index.
+		/// </summary>
+		/// <param name="index">
+		///		The position in this instance where insertion begins.
+		/// </param>
+		/// <param name="data">
+		///		The data to insert into the underlying buffer.
+		/// </param>
+		public void InsertData(int index, Data data)
+		{
+			InsertData(index, data.ByteArray);
+		}
+
+		/// <summary>
+		/// This method automatically increases the length of the data by the proper length,
+		/// and copies the data from the given byte array into the underlying buffer.
+		/// The data is copied starting at the given offset up to the given length.
+		/// The data is inserted into the underlying buffer at the given index.
+		/// </summary>
+		/// <param name="index">
+		///		The position in this instance where insertion begins.
+		/// </param>
+		/// <param name="data">
+		///		The data to insert into the underlying buffer.
+		/// </param>
+		/// <param name="offset">
+		///		The offset from which to start copying data from the given data.
+		/// </param>
+		/// <param name="length">
+		///		The amount of data to copy from the given data.
+		///	</param>
+		public void InsertData(int index, Data data, int offset, int length)
+		{
+			InsertData(index, data.ByteArray, offset, length);
+		}
+
+		/// <summary>
+		/// This method automatically increases the length of the data by the proper length,
+		/// and copies the data from the given byte array into the underlying buffer.
+		/// The data is copied starting at the given offset up to the given length.
+		/// The data is inserted into the underlying buffer at the given index.
+		/// </summary>
+		/// <param name="index">
+		///		The position in this instance where insertion begins.
+		/// </param>
+		/// <param name="byteArray">
+		///		The array of bytes to insert into the underlying buffer.
+		/// </param>
+		public void InsertData(int index, byte[] byteArray)
+		{
+			InsertData(index, byteArray, 0, byteArray.Length);
+		}
+
+		/// <summary>
+		/// This method automatically increases the length of the data by the proper length,
+		/// and copies the data from the given byte array into the underlying buffer.
+		/// The data is copied starting at the given offset up to the given length.
+		/// The data is inserted into the underlying buffer at the given index.
+		/// </summary>
+		/// <param name="index">
+		///		The position in this instance where insertion begins.
+		/// </param>
+		/// <param name="byteArray">
+		///		The array of bytes to insert into the underlying buffer.
+		/// </param>
+		/// <param name="offset">
+		///		The offset from which to start copying data from the given byteArray.
+		/// </param>
+		/// <param name="length">
+		///		The amount of data to copy from the given byteArray.
+		///	</param>
+		public void InsertData(int index, byte[] byteArray, int offset, int length)
+		{
+			byte[] newBuffer = new byte[buffer.Length + length];
+
+			Buffer.BlockCopy(buffer, 0, newBuffer, 0, index);
+			Buffer.BlockCopy(byteArray, offset, newBuffer, index, length);
+			Buffer.BlockCopy(buffer, index, newBuffer, index + length, buffer.Length - index);
 			buffer = newBuffer;
 		}
 	}

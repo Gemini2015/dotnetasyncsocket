@@ -57,15 +57,16 @@ namespace Deusty.Net
 		private const int READALL_CHUNKSIZE = (1024 * 32);
 		private const int WRITE_CHUNKSIZE   = (1024 * 32);
 
-		private volatile byte flags;
-		private const byte kDidPassConnectMethod   = 1 << 0; // If set, disconnection results in delegate call.
-		private const byte kDidCallConnectDelegate = 1 << 1; // If set, connect delegate has been called.
-		private const byte kPauseReads             = 1 << 2; // If set, reads are not dequeued until further notice.
-		private const byte kPauseWrites            = 1 << 3; // If set, writes are not dequeued until further notice.
-		private const byte kForbidReadsWrites      = 1 << 4; // If set, no new reads or writes are allowed.
-		private const byte kDisconnectAfterReads   = 1 << 5; // If set, disconnect as soon as no more reads are queued.
-		private const byte kDisconnectAfterWrites  = 1 << 6; // If set, disconnect as soon as no more writes are queued.
-		private const byte kStop                   = 1 << 7; // If set, sockets are closing or closed.
+		private volatile UInt16 flags;
+		private const UInt16 kDidPassConnectMethod   = 1 << 0; // If set, disconnection results in delegate call
+		private const UInt16 kDidCallConnectDelegate = 1 << 1; // If set, connect delegate has been called
+		private const UInt16 kPauseReads             = 1 << 2; // If set, reads are not dequeued until further notice
+		private const UInt16 kPauseWrites            = 1 << 3; // If set, writes are not dequeued until further notice
+		private const UInt16 kForbidReadsWrites      = 1 << 4; // If set, no new reads or writes are allowed
+		private const UInt16 kDisconnectAfterReads   = 1 << 5; // If set, disconnect after no more reads are queued
+		private const UInt16 kDisconnectAfterWrites  = 1 << 6; // If set, disconnect after no more writes are queued
+		private const UInt16 kClosingWithError       = 1 << 7; // If set, the socket is being closed due to an error
+		private const UInt16 kStop                   = 1 << 8; // If set, sockets are closing or closed
 
 		private Queue readQueue;
 		private Queue writeQueue;
@@ -286,35 +287,32 @@ namespace Deusty.Net
 
 		protected virtual void OnSocketWillDisconnect(Exception e)
 		{
-			if(WillDisconnect != null)
+			// Note: This method is called synchronously to allow the delegate(s) to access the unread data
+
+			try
 			{
-				if (synchronizingObject != null)
+				if (WillDisconnect != null)
 				{
-					if (synchronizingObject is System.Windows.Forms.Control)
+					if (synchronizingObject != null)
 					{
 						object[] args = { this, e };
-						synchronizingObject.BeginInvoke(WillDisconnect, args);
+						synchronizingObject.Invoke(WillDisconnect, args);
 					}
-					else
+					else if (allowApplicationForms)
 					{
-						object[] delPlusArgs = { WillDisconnect, this, e };
-						eventQueue.Enqueue(delPlusArgs);
-						ThreadPool.QueueUserWorkItem(new WaitCallback(DoInvoke));
+						System.Windows.Forms.Form appForm = GetApplicationForm();
+						if (appForm != null)
+						{
+							appForm.Invoke(WillDisconnect, this, e);
+						}
 					}
-				}
-				else if (allowApplicationForms)
-				{
-					System.Windows.Forms.Form appForm = GetApplicationForm();
-					if (appForm != null)
+					else if (allowMultithreadedCallbacks)
 					{
-						appForm.BeginInvoke(WillDisconnect, this, e);
+						WillDisconnect.Invoke(this, e);
 					}
-				}
-				else if (allowMultithreadedCallbacks)
-				{
-					WillDisconnect.BeginInvoke(this, e, new AsyncCallback(FinishWillDisconnect), null);
 				}
 			}
+			catch { }
 		}
 
 		protected virtual void OnSocketDidDisconnect()
@@ -345,7 +343,7 @@ namespace Deusty.Net
 				}
 				else if (allowMultithreadedCallbacks)
 				{
-					DidDisconnect.BeginInvoke(this, new AsyncCallback(FinishWillDisconnect), null);
+					DidDisconnect.BeginInvoke(this, new AsyncCallback(FinishDidDisconnect), null);
 				}
 			}
 		}
@@ -385,27 +383,31 @@ namespace Deusty.Net
 
 		protected virtual bool OnSocketWillConnect(Socket socket)
 		{
-			if (WillConnect != null)
+			try
 			{
-				object[] args = { this, socket };
-
-				if (synchronizingObject != null)
+				if (WillConnect != null)
 				{
-					return (bool)synchronizingObject.Invoke(WillConnect, args);
-				}
-				else if (allowApplicationForms)
-				{
-					System.Windows.Forms.Form appForm = GetApplicationForm();
-					if (appForm != null)
+					if (synchronizingObject != null)
 					{
-						return (bool)appForm.Invoke(WillConnect, args);
+						object[] args = { this, socket };
+						return (bool)synchronizingObject.Invoke(WillConnect, args);
+					}
+					else if (allowApplicationForms)
+					{
+						System.Windows.Forms.Form appForm = GetApplicationForm();
+						if (appForm != null)
+						{
+							object[] args = { this, socket };
+							return (bool)appForm.Invoke(WillConnect, args);
+						}
+					}
+					else if (allowMultithreadedCallbacks)
+					{
+						return WillConnect.Invoke(this, socket);
 					}
 				}
-				else if (allowMultithreadedCallbacks)
-				{
-					return (bool)WillConnect.DynamicInvoke(args);
-				}
 			}
+			catch { }
 
 			return true;
 		}
@@ -639,15 +641,6 @@ namespace Deusty.Net
 				}
 				catch { }
 			}
-		}
-
-		private void FinishWillDisconnect(IAsyncResult iar)
-		{
-			try
-			{
-				WillDisconnect.EndInvoke(iar);
-			}
-			catch { }
 		}
 
 		private void FinishDidDisconnect(IAsyncResult iar)
@@ -1579,21 +1572,14 @@ namespace Deusty.Net
 		/// </summary>
 		private void MaybeStartTLS()
 		{
-			// We can't start TLS until all of the following are met:
+			Debug.Assert(socketStream != null, "Attempting to start tls without a connected socket");
+			Trace.Assert(secureSocketStream == null, "Attempting to start tls after tls has already completed");
+
+			// We can't start TLS until:
 			// - Any queued reads prior to the user calling StartTLS are complete
 			// - Any queued writes prior to the user calling StartTLS are complete
-			// - We're currently connected to a remote host
-			// - We've setup our normal socketStream
-			// - We haven't already started TLS
-			// 
-			// If not all these conditions are met then we're either not ready to start tls,
-			// or we've already started and/or finished it.
 
-			if ((flags & kPauseReads) > 0 &&
-				(flags & kPauseWrites) > 0 &&
-				(this.Connected) && 
-				(socketStream != null) &&
-				(secureSocketStream == null))
+			if (((flags & kPauseReads) > 0) && ((flags & kPauseWrites) > 0))
 			{
 				try
 				{
@@ -1679,6 +1665,8 @@ namespace Deusty.Net
 		/// </param>
 		private void CloseWithException(Exception e)
 		{
+			flags |= kClosingWithError;
+
 			if ((flags & kDidPassConnectMethod) > 0)
 			{
 				// Try to salvage what data we can
@@ -1697,7 +1685,20 @@ namespace Deusty.Net
 		/// </summary>
 		private void RecoverUnreadData()
 		{
-			// Todo: Implement RecoverUnreadData
+			if (currentRead != null)
+			{
+				int bytesAvailable = currentRead.bytesDone + currentRead.bytesProcessing;
+
+				if (readOverflow == null)
+				{
+					readOverflow = new MutableData(currentRead.buffer, 0, bytesAvailable);
+				}
+				else
+				{
+					// We need to move the data into the front of the read overflow
+					readOverflow.InsertData(0, currentRead.buffer, 0, bytesAvailable);
+				}
+			}
 		}
 
 		/// <summary>
@@ -1828,26 +1829,70 @@ namespace Deusty.Net
 			// Queue a call to MaybeDisconnect
 			ThreadPool.QueueUserWorkItem(new WaitCallback(MaybeDisconnect));
 		}
+
+		/// <summary>
+		/// Disconnects after all pending reads and writes have completed.
+		/// After calling this, the read and write methods will do nothing.
+		/// </summary>
+		public void DisconnectAfterReadingAndWriting()
+		{
+			flags |= (kForbidReadsWrites | kDisconnectAfterReads | kDisconnectAfterWrites);
+
+			// Queue a call to MaybeDisconnect
+			ThreadPool.QueueUserWorkItem(new WaitCallback(MaybeDisconnect));
+		}
 		
 		private void MaybeDisconnect(object ignore)
 		{
 			lock (lockObj)
 			{
+				bool shouldDisconnect = false;
+
 				if ((flags & kDisconnectAfterReads) > 0)
 				{
 					if ((readQueue.Count == 0) && (currentRead == null))
 					{
-						Disconnect();
+						if ((flags & kDisconnectAfterWrites) > 0)
+						{
+							if ((writeQueue.Count == 0) && (currentWrite == null))
+							{
+								shouldDisconnect = true;
+							}
+						}
+						else
+						{
+							shouldDisconnect = true;
+						}
 					}
 				}
-				if ((flags & kDisconnectAfterWrites) > 0)
+				else if ((flags & kDisconnectAfterWrites) > 0)
 				{
 					if ((writeQueue.Count == 0) && (currentWrite == null))
 					{
-						Disconnect();
+						shouldDisconnect = true;
 					}
 				}
+
+				if (shouldDisconnect)
+				{
+					Disconnect();
+				}
 			}
+		}
+
+		/// <summary>
+		/// In the event of an error, this method may be called during SocketWillDisconnect
+		/// to read any data that's left on the socket.
+		/// </summary>
+		public Data GetUnreadData()
+		{
+			// Ensure this method will only return data in the event of an error
+			if ((flags & kClosingWithError) == 0) return null;
+
+			if (readOverflow == null)
+				return new Data(0);
+			else
+				return readOverflow;
 		}
 
 		///////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -2168,11 +2213,6 @@ namespace Deusty.Net
 					{
 						// Don't do any reads yet.
 						// We're waiting for TLS negotiation to start and/or finish.
-
-						// Attempt to start TLS if needed.
-						// This method won't do anything unless it's the proper time.
-						// We call it here because a user may have called StartTLS() immediately after Connect().
-						MaybeStartTLS();
 					}
 					else if(readQueue.Count > 0)
 					{
@@ -2221,7 +2261,17 @@ namespace Deusty.Net
 					}
 					else if((flags & kDisconnectAfterReads) > 0)
 					{
-						Disconnect();
+						if ((flags & kDisconnectAfterWrites) > 0)
+						{
+							if ((writeQueue.Count == 0) && (currentWrite == null))
+							{
+								Disconnect();
+							}
+						}
+						else
+						{
+							Disconnect();
+						}
 					}
 				}
 			}
@@ -2488,6 +2538,7 @@ namespace Deusty.Net
 				if (currentRead.bytesProcessing > 0)
 				{
 					readOverflow = new MutableData(currentRead.buffer, currentRead.bytesDone, currentRead.bytesProcessing);
+					currentRead.bytesProcessing = 0;
 				}
 
 				// Truncate any excess unused buffer space in the read packet
@@ -2593,11 +2644,6 @@ namespace Deusty.Net
 					{
 						// Don't do any reads yet.
 						// We're waiting for TLS negotiation to start and/or finish.
-
-						// Attempt to start TLS if needed.
-						// This method won't do anything unless it's the proper time.
-						// We call it here because a user may have called StartTLS() immediately after Connect().
-						MaybeStartTLS();
 					}
 					else if (writeQueue.Count > 0)
 					{
@@ -2643,7 +2689,17 @@ namespace Deusty.Net
 					}
 					else if ((flags & kDisconnectAfterWrites) > 0)
 					{
-						Disconnect();
+						if ((flags & kDisconnectAfterReads) > 0)
+						{
+							if ((readQueue.Count == 0) && (currentRead == null))
+							{
+								Disconnect();
+							}
+						}
+						else
+						{
+							Disconnect();
+						}
 					}
 				}
 			}
