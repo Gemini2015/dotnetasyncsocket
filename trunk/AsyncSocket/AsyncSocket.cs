@@ -2617,6 +2617,7 @@ namespace Deusty.Net
 		public void Write(IData data, int timeout, long tag)
 		{
 			if (data.Length == 0) return;
+			if ((flags & kForbidReadsWrites) > 0) return;
 
 			// writeQueue is synchronized
 			writeQueue.Enqueue(new AsyncWritePacket(data, 0, timeout, tag));
