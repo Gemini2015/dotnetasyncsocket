@@ -60,19 +60,7 @@ namespace HttpTest
 		{
 			InitializeComponent();
 
-			// Create a new instance of Deusty.Net.AsyncSocket
-			asyncSocket = new AsyncSocket();
-
-			// Tell AsyncSocket to invoke its delegate methods on our form thread
-			asyncSocket.SynchronizingObject = this;
-
-			// Register for the events we're interested in
-			asyncSocket.DidConnect += new AsyncSocket.SocketDidConnect(asyncSocket_DidConnect);
-			asyncSocket.DidSecure += new AsyncSocket.SocketDidSecure(asyncSocket_DidSecure);
-			asyncSocket.DidRead += new AsyncSocket.SocketDidRead(asyncSocket_DidRead);
-			asyncSocket.DidReadPartial += new AsyncSocket.SocketDidReadPartial(asyncSocket_DidReadPartial);
-			asyncSocket.WillDisconnect += new AsyncSocket.SocketWillDisconnect(asyncSocket_WillDisconnect);
-			asyncSocket.DidDisconnect += new AsyncSocket.SocketDidDisconnect(asyncSocket_DidDisconnect);
+			CreateAndSetupAsyncSocket();
 		}
 
 		private void Form1_Load(object sender, EventArgs e)
@@ -101,6 +89,23 @@ namespace HttpTest
 			}
 
 			Properties.Settings.Default.Save();
+		}
+
+		private void CreateAndSetupAsyncSocket()
+		{
+			// Create a new instance of Deusty.Net.AsyncSocket
+			asyncSocket = new AsyncSocket();
+
+			// Tell AsyncSocket to invoke its delegate methods on our form thread
+			asyncSocket.SynchronizingObject = this;
+
+			// Register for the events we're interested in
+			asyncSocket.DidConnect += new AsyncSocket.SocketDidConnect(asyncSocket_DidConnect);
+			asyncSocket.DidSecure += new AsyncSocket.SocketDidSecure(asyncSocket_DidSecure);
+			asyncSocket.DidRead += new AsyncSocket.SocketDidRead(asyncSocket_DidRead);
+			asyncSocket.DidReadPartial += new AsyncSocket.SocketDidReadPartial(asyncSocket_DidReadPartial);
+			asyncSocket.WillClose += new AsyncSocket.SocketWillClose(asyncSocket_WillClose);
+			asyncSocket.DidClose += new AsyncSocket.SocketDidClose(asyncSocket_DidClose);
 		}
 
 		private void fetchButton_Click(object sender, EventArgs e)
@@ -264,7 +269,7 @@ namespace HttpTest
 						LogError("HTTP status code is not \"200 OK\"");
 						LogError("Disconnecting...");
 
-						asyncSocket.Disconnect();
+						asyncSocket.Close();
 						return;
 					}
 
@@ -299,7 +304,7 @@ namespace HttpTest
 						LogError("Unable to extract content length, and not using chunked transfer encoding!");
 						LogError("Disconnecting...");
 
-						asyncSocket.Disconnect();
+						asyncSocket.Close();
 						return;
 					}
 				}
@@ -323,7 +328,7 @@ namespace HttpTest
 				LogInfo("\r\nTotal Time = {0:N} milliseconds", ellapsed.TotalMilliseconds);
 
 				LogInfo("Disconnecting...");
-				asyncSocket.Disconnect();
+				asyncSocket.Close();
 			}
 			else if (tag == HTTP_BODY_CHUNKED)
 			{
@@ -385,7 +390,7 @@ namespace HttpTest
 						LogInfo("\r\nTotal Time = {0:N} milliseconds", ellapsed.TotalMilliseconds);
 
 						LogInfo("Disconnecting...");
-						asyncSocket.Disconnect();
+						asyncSocket.Close();
 					}
 				}
 			}
@@ -403,14 +408,17 @@ namespace HttpTest
 			}
 		}
 
-		private void asyncSocket_WillDisconnect(AsyncSocket sender, Exception e)
+		private void asyncSocket_WillClose(AsyncSocket sender, Exception e)
 		{
 			LogInfo("Disconnecting: {0}", e);
 		}
 
-		private void asyncSocket_DidDisconnect(AsyncSocket sender)
+		private void asyncSocket_DidClose(AsyncSocket sender)
 		{
 			LogInfo("Disconnected from host");
+
+			asyncSocket = null;
+			CreateAndSetupAsyncSocket();
 
 			fetchButton.Enabled = true;
 			sslCheckBox.Enabled = true;

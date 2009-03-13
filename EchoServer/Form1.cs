@@ -1,3 +1,6 @@
+// Uncomment out the following line for a multi-threaded architecture
+//#define IS_MULTITHREADED
+
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
@@ -6,6 +9,7 @@ using System.Drawing;
 using System.Text;
 using System.Windows.Forms;
 using Deusty.Net;
+
 
 namespace EchoServer
 {
@@ -22,8 +26,15 @@ namespace EchoServer
 			// Create a new instance of Deusty.Net.AsyncSocket
 			listenSocket = new AsyncSocket();
 
+#if IS_MULTITHREADED
+			// Tell AsyncSocket to allow multi-threaded delegate methods
+			// Note: Accepted sockets will automatically inherit this setting as well
+			listenSocket.AllowMultithreadedCallbacks = true;
+#else
 			// Tell AsyncSocket to invoke its delegate methods on our form thread
+			// Note: Accepted sockets will automatically inherit this setting as well
 			listenSocket.SynchronizingObject = this;
+#endif
 
 			// Register for the events we're interested in
 			listenSocket.DidAccept += new AsyncSocket.SocketDidAccept(listenSocket_DidAccept);
@@ -132,16 +143,24 @@ namespace EchoServer
 			else
 			{
 				// Stop accepting connections
-				listenSocket.Disconnect();
+				listenSocket.Close();
 
+#if IS_MULTITHREADED
 				// Stop any client connections
-				while(connectedSockets.Count > 0)
+				lock (connectedSockets)
 				{
-					// Call Disconnect on the socket,
-					// which will invoke the DidDisconnect method,
-					// which will remove the socket from the list.
-					connectedSockets[0].Disconnect();
+					foreach (AsyncSocket socket in connectedSockets)
+					{
+						socket.Close();
+					}
 				}
+#else
+				// Stop any client connections
+				foreach (AsyncSocket socket in connectedSockets)
+				{
+					socket.Close();
+				}
+#endif
 
 				LogInfo("Stopped Echo server");
 				isStarted = false;
@@ -151,6 +170,10 @@ namespace EchoServer
 			}
 		}
 
+#if IS_MULTITHREADED
+		private delegate void LogMessageDelegate(String format, params Object[] args);
+#endif
+		
 		private void LogInfo(String format, params Object[] args)
 		{
 			String msg = String.Format(format, args);
@@ -171,8 +194,10 @@ namespace EchoServer
 			logRichTextBox.ScrollToCaret();
 		}
 
-		private void LogMessage(String msg)
+		private void LogMessage(String format, params Object[] args)
 		{
+			String msg = String.Format(format, args);
+
 			logRichTextBox.SelectionColor = Color.Black;
 			logRichTextBox.AppendText(msg);
 			logRichTextBox.SelectionStart = logRichTextBox.Text.Length;
@@ -181,19 +206,30 @@ namespace EchoServer
 
 		private void listenSocket_DidAccept(AsyncSocket sender, AsyncSocket newSocket)
 		{
+#if IS_MULTITHREADED
+			object[] args = { newSocket.RemoteAddress, newSocket.RemotePort };
+			this.BeginInvoke(new LogMessageDelegate(LogInfo), "Accepted client {0}:{1}", args);
+#else
 			LogInfo("Accepted client {0}:{1}", newSocket.RemoteAddress, newSocket.RemotePort);
+#endif
 
 			newSocket.DidRead += new AsyncSocket.SocketDidRead(asyncSocket_DidRead);
 			newSocket.DidWrite += new AsyncSocket.SocketDidWrite(asyncSocket_DidWrite);
-			newSocket.WillDisconnect += new AsyncSocket.SocketWillDisconnect(asyncSocket_WillDisconnect);
-			newSocket.DidDisconnect += new AsyncSocket.SocketDidDisconnect(asyncSocket_DidDisconnect);
+			newSocket.WillClose += new AsyncSocket.SocketWillClose(asyncSocket_WillClose);
+			newSocket.DidClose += new AsyncSocket.SocketDidClose(asyncSocket_DidClose);
 
+#if IS_MULTITHREADED
+			lock (connectedSockets)
+			{
+				connectedSockets.Add(newSocket);
+			}
+#else
 			connectedSockets.Add(newSocket);
+#endif
 
 			newSocket.Write(new Data("Welcome to the AsyncSocket Echo Server\r\n"), -1, 0);
 
-			// Note: newSocket automatically inherits the invoke options of it's parent (listenSocket).
-			// So, in this case, newSocket.SynchronizingObject is already set to "this".
+			// Remember: newSocket automatically inherits the invoke options of it's parent (listenSocket).
 		}
 
 		private void asyncSocket_DidRead(AsyncSocket sender, Data data, long tag)
@@ -202,11 +238,22 @@ namespace EchoServer
 			try
 			{
 				msg = Encoding.UTF8.GetString(data.ByteArray);
+
+#if IS_MULTITHREADED
+				object[] args = { };
+				this.BeginInvoke(new LogMessageDelegate(LogMessage), msg, args);
+#else
 				LogMessage(msg);
+#endif
 			}
 			catch(Exception e)
 			{
+#if IS_MULTITHREADED
+				object[] args = { e };
+				this.BeginInvoke(new LogMessageDelegate(LogError), "Error converting received data into UTF-8 String: {0}", args);
+#else
 				LogError("Error converting received data into UTF-8 String: {0}", e);
+#endif
 			}
 
 			// Even if we were unable to write the incoming data to the log,
@@ -219,14 +266,26 @@ namespace EchoServer
 			sender.Read(AsyncSocket.CRLFData, -1, 0);
 		}
 
-		private void asyncSocket_WillDisconnect(AsyncSocket sender, Exception e)
+		private void asyncSocket_WillClose(AsyncSocket sender, Exception e)
 		{
+#if IS_MULTITHREADED
+			object[] args = { sender.RemoteAddress, sender.RemotePort };
+			this.BeginInvoke(new LogMessageDelegate(LogInfo), "Client Disconnected: {0}:{1}", args);
+#else
 			LogInfo("Client Disconnected: {0}:{1}", sender.RemoteAddress, sender.RemotePort);
+#endif
 		}
 
-		private void asyncSocket_DidDisconnect(AsyncSocket sender)
+		private void asyncSocket_DidClose(AsyncSocket sender)
 		{
+#if IS_MULTITHREADED
+			lock (connectedSockets)
+			{
+				connectedSockets.Remove(sender);
+			}
+#else
 			connectedSockets.Remove(sender);
+#endif
 		}
 	}
 }

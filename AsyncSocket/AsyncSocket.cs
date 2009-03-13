@@ -4,7 +4,6 @@ using System.Collections;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading;
-using System.Reflection;
 using System.Diagnostics;
 using System.Net.Security;
 using System.Text;
@@ -15,12 +14,10 @@ namespace Deusty.Net
 	/// The AsyncSocket class allows for asynchronous socket activity,
 	/// and has usefull methods that allow for controlled reading of a certain length,
 	/// or until a specified terminator.
-	/// It also has the ability to timeout asynchronous reads, and has several delegate methods.
+	/// It also has the ability to timeout asynchronous operations, and has several useful events.
 	/// </summary>
 	public class AsyncSocket
 	{
-		public delegate void SocketWillDisconnect(AsyncSocket sender, Exception e);
-		public delegate void SocketDidDisconnect(AsyncSocket sender);
 		public delegate void SocketDidAccept(AsyncSocket sender, AsyncSocket newSocket);
 		public delegate bool SocketWillConnect(AsyncSocket sender, Socket socket);
 		public delegate void SocketDidConnect(AsyncSocket sender, IPAddress address, UInt16 port);
@@ -29,9 +26,9 @@ namespace Deusty.Net
 		public delegate void SocketDidWrite(AsyncSocket sender, long tag);
 		public delegate void SocketDidWritePartial(AsyncSocket sender, int partialLength, long tag);
 		public delegate void SocketDidSecure(AsyncSocket sender);
+		public delegate void SocketWillClose(AsyncSocket sender, Exception e);
+		public delegate void SocketDidClose(AsyncSocket sender);
 
-		public event SocketWillDisconnect WillDisconnect;
-		public event SocketDidDisconnect DidDisconnect;
 		public event SocketDidAccept DidAccept;
 		public event SocketWillConnect WillConnect;
 		public event SocketDidConnect DidConnect;
@@ -40,7 +37,9 @@ namespace Deusty.Net
 		public event SocketDidWrite DidWrite;
 		public event SocketDidWritePartial DidWritePartial;
 		public event SocketDidSecure DidSecure;
-		
+		public event SocketWillClose WillClose;
+		public event SocketDidClose DidClose;
+
 		private Socket socket4;
 		private Socket socket6;
 		private Stream stream;
@@ -57,16 +56,15 @@ namespace Deusty.Net
 		private const int READALL_CHUNKSIZE = (1024 * 32);
 		private const int WRITE_CHUNKSIZE   = (1024 * 32);
 
-		private volatile UInt16 flags;
-		private const UInt16 kDidPassConnectMethod   = 1 << 0; // If set, disconnection results in delegate call
-		private const UInt16 kDidCallConnectDelegate = 1 << 1; // If set, connect delegate has been called
-		private const UInt16 kPauseReads             = 1 << 2; // If set, reads are not dequeued until further notice
-		private const UInt16 kPauseWrites            = 1 << 3; // If set, writes are not dequeued until further notice
-		private const UInt16 kForbidReadsWrites      = 1 << 4; // If set, no new reads or writes are allowed
-		private const UInt16 kDisconnectAfterReads   = 1 << 5; // If set, disconnect after no more reads are queued
-		private const UInt16 kDisconnectAfterWrites  = 1 << 6; // If set, disconnect after no more writes are queued
-		private const UInt16 kClosingWithError       = 1 << 7; // If set, the socket is being closed due to an error
-		private const UInt16 kStop                   = 1 << 8; // If set, sockets are closing or closed
+		private volatile byte flags;
+		private const byte kDidPassConnectMethod  = 1 << 0;  // If set, disconnection results in delegate call
+		private const byte kPauseReads            = 1 << 1;  // If set, reads are not dequeued until further notice
+		private const byte kPauseWrites           = 1 << 2;  // If set, writes are not dequeued until further notice
+		private const byte kForbidReadsWrites     = 1 << 3;  // If set, no new reads or writes are allowed
+		private const byte kCloseAfterReads       = 1 << 4;  // If set, disconnect after no more reads are queued
+		private const byte kCloseAfterWrites      = 1 << 5;  // If set, disconnect after no more writes are queued
+		private const byte kClosingWithError      = 1 << 6;  // If set, socket is being closed due to an error
+		private const byte kClosed                = 1 << 7;  // If set, socket is considered closed
 
 		private Queue readQueue;
 		private Queue writeQueue;
@@ -80,8 +78,6 @@ namespace Deusty.Net
 		private System.Threading.Timer writeTimer;
 
 		private MutableData readOverflow;
-
-		private Guid dnsGuid;
 
 		// We use a seperate lock object instead of locking on 'this'.
 		// This is necessary to avoid a tricky deadlock situation.
@@ -115,7 +111,6 @@ namespace Deusty.Net
 			public bool readAllAvailableData;
 			public bool fixedLengthRead;
 			public byte[] term;
-			public IAsyncResult iar;
 
 			public AsyncReadPacket(MutableData buffer,
 			                               int timeout,
@@ -132,7 +127,6 @@ namespace Deusty.Net
 				this.readAllAvailableData = readAllAvailableData;
 				this.fixedLengthRead = fixedLengthRead;
 				this.term = term;
-				this.iar = null;
 			}
 		}
 
@@ -146,7 +140,6 @@ namespace Deusty.Net
 			public int bytesProcessing;
 			public int timeout;
 			public long tag;
-			public IAsyncResult iar;
 
 			public AsyncWritePacket(IData buffer,
 			                          int bytesDone,
@@ -179,13 +172,11 @@ namespace Deusty.Net
 		{
 			public String host;
 			public UInt16 port;
-			public Guid guid;
 
-			public ConnectParameters(String host, UInt16 port, Guid guid)
+			public ConnectParameters(String host, UInt16 port)
 			{
 				this.host = host;
 				this.port = port;
-				this.guid = guid;
 			}
 		}
 
@@ -207,10 +198,10 @@ namespace Deusty.Net
 			// and what needs to be done.
 			flags = 0;
 
-			// Initialize read and write queues (thread safe)
+			// Initialize queues (thread safe)
 			readQueue = Queue.Synchronized(new Queue(INIT_READQUEUE_CAPACITY));
 			writeQueue = Queue.Synchronized(new Queue(INIT_WRITEQUEUE_CAPACITY));
-			eventQueue = Queue.Synchronized(new Queue(INIT_WRITEQUEUE_CAPACITY));
+			eventQueue = Queue.Synchronized(new Queue(INIT_EVENTQUEUE_CAPACITY));
 		}
 
 		private Object mTag;
@@ -238,6 +229,10 @@ namespace Deusty.Net
 		/// If using in conjunction with a form, it is highly recommended
 		/// that you pass your main <see cref="System.Windows.Forms.Form">form</see> (window) in.
 		/// </remarks>
+		/// <remarks>
+		/// You should configure your invoke options before you start reading/writing.
+		/// It's recommended you don't change your invoke options in the middle of reading/writing.
+		/// </remarks>
 		public System.ComponentModel.ISynchronizeInvoke SynchronizingObject
 		{
 			get { return synchronizingObject; }
@@ -253,6 +248,10 @@ namespace Deusty.Net
 		/// 
 		/// Note: This is true by default.
 		/// </summary>
+		/// <remarks>
+		/// You should configure your invoke options before you start reading/writing.
+		/// It's recommended you don't change your invoke options in the middle of reading/writing.
+		/// </remarks>
 		public bool AllowApplicationForms
 		{
 			get { return allowApplicationForms; }
@@ -271,6 +270,10 @@ namespace Deusty.Net
 		/// If your application uses Windows.Forms or any other non-thread safe
 		/// library, then you will have to do your own invoking.
 		/// </remarks>
+		/// <remarks>
+		/// You should configure your invoke options before you start reading/writing.
+		/// It's recommended you don't change your invoke options in the middle of reading/writing.
+		/// </remarks>
 		public bool AllowMultithreadedCallbacks
 		{
 			get { return allowMultithreadedCallbacks; }
@@ -285,126 +288,353 @@ namespace Deusty.Net
 			}
 		}
 
-		protected virtual void OnSocketWillDisconnect(Exception e)
-		{
-			// Note: This method is called synchronously to allow the delegate(s) to access the unread data
-
-			try
-			{
-				if (WillDisconnect != null)
-				{
-					if (synchronizingObject != null)
-					{
-						object[] args = { this, e };
-						synchronizingObject.Invoke(WillDisconnect, args);
-					}
-					else if (allowApplicationForms)
-					{
-						System.Windows.Forms.Form appForm = GetApplicationForm();
-						if (appForm != null)
-						{
-							appForm.Invoke(WillDisconnect, this, e);
-						}
-					}
-					else if (allowMultithreadedCallbacks)
-					{
-						WillDisconnect.Invoke(this, e);
-					}
-				}
-			}
-			catch { }
-		}
-
-		protected virtual void OnSocketDidDisconnect()
-		{
-			if (DidDisconnect != null)
-			{
-				if (synchronizingObject != null)
-				{
-					if (synchronizingObject is System.Windows.Forms.Control)
-					{
-						object[] args = { this };
-						synchronizingObject.BeginInvoke(DidDisconnect, args);
-					}
-					else
-					{
-						object[] delPlusArgs = { DidDisconnect, this };
-						eventQueue.Enqueue(delPlusArgs);
-						ThreadPool.QueueUserWorkItem(new WaitCallback(DoInvoke));
-					}
-				}
-				else if (allowApplicationForms)
-				{
-					System.Windows.Forms.Form appForm = GetApplicationForm();
-					if (appForm != null)
-					{
-						appForm.BeginInvoke(DidDisconnect, this);
-					}
-				}
-				else if (allowMultithreadedCallbacks)
-				{
-					DidDisconnect.BeginInvoke(this, new AsyncCallback(FinishDidDisconnect), null);
-				}
-			}
-		}
+		// What is going on with the event handler methods below?
+		// 
+		// The asynchronous nature of this class means that we're very multithreaded.
+		// But the client may not be. The client may be using a SynchronizingObject,
+		// or has requested we use application forms for invoking.
+		//
+		// A problem arises from this situation:
+		// If a client calls the Disconnect method, then he/she does NOT
+		// expect to receive any other delegate methods after the
+		// call to Diconnect completes.
+		// 
+		// Primitive invoking from a background thread will not solve this problem.
+		// So what we do instead is invoke into the same thread as the client,
+		// then check to make sure the socket hasn't been closed,
+		// and then execute the delegate method.
 
 		protected virtual void OnSocketDidAccept(AsyncSocket newSocket)
 		{
+			// ASYNCHRONOUS
+			// This allows the listening socket to quickly get back to accepting another connection.
+
 			if (DidAccept != null)
 			{
 				if (synchronizingObject != null)
 				{
-					if (synchronizingObject is System.Windows.Forms.Control)
-					{
-						object[] args = { this, newSocket };
-						synchronizingObject.BeginInvoke(DidAccept, args);
-					}
-					else
-					{
-						object[] delPlusArgs = { DidAccept, this, newSocket };
-						eventQueue.Enqueue(delPlusArgs);
-						ThreadPool.QueueUserWorkItem(new WaitCallback(DoInvoke));
-					}
+					object[] args = { newSocket };
+					synchronizingObject.BeginInvoke(new DoDidAcceptDelegate(DoDidAccept), args);
 				}
 				else if (allowApplicationForms)
 				{
 					System.Windows.Forms.Form appForm = GetApplicationForm();
 					if (appForm != null)
 					{
-						appForm.BeginInvoke(DidAccept, this, newSocket);
+						appForm.BeginInvoke(new DoDidAcceptDelegate(DoDidAccept), newSocket);
 					}
 				}
 				else if (allowMultithreadedCallbacks)
 				{
-					DidAccept.BeginInvoke(this, newSocket, new AsyncCallback(FinishDidAccept), null);
+					object[] delPlusArgs = { DidAccept, this, newSocket };
+					eventQueue.Enqueue(delPlusArgs);
+					ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent), false);
 				}
 			}
 		}
 
 		protected virtual bool OnSocketWillConnect(Socket socket)
 		{
+			// SYNCHRONOUS
+			// This must be synchronous because we need to return a boolean value.
+
+			if (WillConnect != null)
+			{
+				if (synchronizingObject != null)
+				{
+					object[] args = { socket };
+					return (bool)synchronizingObject.Invoke(new DoWillConnectDelegate(DoWillConnect), args);
+				}
+				else if (allowApplicationForms)
+				{
+					System.Windows.Forms.Form appForm = GetApplicationForm();
+					if (appForm != null)
+					{
+						return (bool)appForm.Invoke(new DoWillConnectDelegate(DoWillConnect), socket);
+					}
+				}
+				else if (allowMultithreadedCallbacks)
+				{
+					object[] delPlusArgs = { WillConnect, this, socket };
+					eventQueue.Enqueue(delPlusArgs);
+					ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent), true);
+				}
+			}
+
+			return true;
+		}
+
+		protected virtual void OnSocketDidConnect(IPAddress address, UInt16 port)
+		{
+			// ASYNCHRONOUS
+			// This allows the socket to quickly move on to previously scheduled operations,
+			// such as TLS or reading/writing.
+
+			if (DidConnect != null)
+			{
+				if (synchronizingObject != null)
+				{
+					object[] args = { address, port };
+					synchronizingObject.BeginInvoke(new DoDidConnectDelegate(DoDidConnect), args);
+				}
+				else if (allowApplicationForms)
+				{
+					System.Windows.Forms.Form appForm = GetApplicationForm();
+					if (appForm != null)
+					{
+						appForm.BeginInvoke(new DoDidConnectDelegate(DoDidConnect), address, port);
+					}
+				}
+				else if (allowMultithreadedCallbacks)
+				{
+					object[] delPlusArgs = { DidConnect, this, address, port };
+					eventQueue.Enqueue(delPlusArgs);
+					ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent), false);
+				}
+			}
+		}
+
+		protected virtual void OnSocketDidRead(Data data, long tag)
+		{
+			// ASYNCHRONOUS
+			// This allows the socket to quickly move on to the next read/write operation.
+
+			if (DidRead != null)
+			{
+				if (synchronizingObject != null)
+				{
+					object[] args = { data, tag };
+					synchronizingObject.BeginInvoke(new DoDidReadDelegate(DoDidRead), args);
+				}
+				else if (allowApplicationForms)
+				{
+					System.Windows.Forms.Form appForm = GetApplicationForm();
+					if (appForm != null)
+					{
+						appForm.BeginInvoke(new DoDidReadDelegate(DoDidRead), data, tag);
+					}
+				}
+				else if (allowMultithreadedCallbacks)
+				{
+					object[] delPlusArgs = { DidRead, this, data, tag };
+					eventQueue.Enqueue(delPlusArgs);
+					ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent), false);
+				}
+			}
+		}
+
+		protected virtual void OnSocketDidReadPartial(int partialLength, long tag)
+		{
+			// ASYNCHRONOUS
+			// This allows the socket to quickly continue reading.
+
+			if (DidReadPartial != null)
+			{
+				if (synchronizingObject != null)
+				{
+					object[] args = { partialLength, tag };
+					synchronizingObject.BeginInvoke(new DoDidReadPartialDelegate(DoDidReadPartial), args);
+				}
+				else if (allowApplicationForms)
+				{
+					System.Windows.Forms.Form appForm = GetApplicationForm();
+					if (appForm != null)
+					{
+						appForm.BeginInvoke(new DoDidReadPartialDelegate(DoDidReadPartial), partialLength, tag);
+					}
+				}
+				else if (allowMultithreadedCallbacks)
+				{
+					object[] delPlusArgs = { DidReadPartial, this, partialLength, tag };
+					eventQueue.Enqueue(delPlusArgs);
+					ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent), false);
+				}
+			}
+		}
+
+		protected virtual void OnSocketDidWrite(long tag)
+		{
+			// ASYNCHRONOUS
+			// This allows the socket to quickly move on to the next read/write operation.
+
+			if (DidWrite != null)
+			{
+				if (synchronizingObject != null)
+				{
+					object[] args = { tag };
+					synchronizingObject.BeginInvoke(new DoDidWriteDelegate(DoDidWrite), args);
+				}
+				else if (allowApplicationForms)
+				{
+					System.Windows.Forms.Form appForm = GetApplicationForm();
+					if (appForm != null)
+					{
+						appForm.BeginInvoke(new DoDidWriteDelegate(DoDidWrite), tag);
+					}
+				}
+				else if (allowMultithreadedCallbacks)
+				{
+					object[] delPlusArgs = { DidWrite, this, tag };
+					eventQueue.Enqueue(delPlusArgs);
+					ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent), false);
+				}
+			}
+		}
+
+		protected virtual void OnSocketDidWritePartial(int partialLength, long tag)
+		{
+			// ASYNCHRONOUS
+			// This allows the socket to quickly continue writing.
+
+			if (DidWritePartial != null)
+			{
+				if (synchronizingObject != null)
+				{
+					object[] args = { partialLength, tag };
+					synchronizingObject.BeginInvoke(new DoDidWritePartialDelegate(DoDidWritePartial), args);
+				}
+				else if (allowApplicationForms)
+				{
+					System.Windows.Forms.Form appForm = GetApplicationForm();
+					if (appForm != null)
+					{
+						appForm.BeginInvoke(new DoDidWritePartialDelegate(DoDidWritePartial), partialLength, tag);
+					}
+				}
+				else if (allowMultithreadedCallbacks)
+				{
+					object[] delPlusArgs = { DidWritePartial, this, partialLength, tag };
+					eventQueue.Enqueue(delPlusArgs);
+					ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent), false);
+				}
+			}
+		}
+
+		protected virtual void OnSocketDidSecure()
+		{
+			// ASYNCHRONOUS
+			// This allows the socket to quickly move on to previously scheduled read/write operations.
+
+			if (DidSecure != null)
+			{
+				if (synchronizingObject != null)
+				{
+					synchronizingObject.BeginInvoke(new DoDidSecureDelegate(DoDidSecure), null);
+				}
+				else if (allowApplicationForms)
+				{
+					System.Windows.Forms.Form appForm = GetApplicationForm();
+					if (appForm != null)
+					{
+						appForm.BeginInvoke(new DoDidSecureDelegate(DoDidSecure));
+					}
+				}
+				else if (allowMultithreadedCallbacks)
+				{
+					object[] delPlusArgs = { DidSecure, this };
+					eventQueue.Enqueue(delPlusArgs);
+					ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent), false);
+				}
+			}
+		}
+
+		protected virtual void OnSocketWillClose(Exception e)
+		{
+			// SYNCHRONOUS
+			// The unread data buffer is only available during this callback.
+
+			if (WillClose != null)
+			{
+				if (synchronizingObject != null)
+				{
+					object[] args = { e };
+					synchronizingObject.Invoke(new DoWillCloseDelegate(DoWillClose), args);
+				}
+				else if (allowApplicationForms)
+				{
+					System.Windows.Forms.Form appForm = GetApplicationForm();
+					if (appForm != null)
+					{
+						appForm.Invoke(new DoWillCloseDelegate(DoWillClose), e);
+					}
+				}
+				else if (allowMultithreadedCallbacks)
+				{
+					object[] delPlusArgs = { WillClose, this, e };
+					eventQueue.Enqueue(delPlusArgs);
+					ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent), true);
+				}
+			}
+		}
+
+		protected virtual void OnSocketDidClose()
+		{
+			// SYNCHRONOUS
+			// If the client called close, the delegate method should be called during the close operation.
+			// If we called close, then it might as well be synchronous, as we have nothing else to do afterwards.
+
+			if (DidClose != null)
+			{
+				if (synchronizingObject != null)
+				{
+					synchronizingObject.Invoke(new DoDidCloseDelegate(DoDidClose), null);
+				}
+				else if (allowApplicationForms)
+				{
+					System.Windows.Forms.Form appForm = GetApplicationForm();
+					if (appForm != null)
+					{
+						appForm.Invoke(new DoDidCloseDelegate(DoDidClose));
+					}
+				}
+				else if (allowMultithreadedCallbacks)
+				{
+					object[] delPlusArgs = { DidClose, this };
+					eventQueue.Enqueue(delPlusArgs);
+					ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent), true);
+				}
+			}
+		}
+
+		private delegate void DoDidAcceptDelegate(AsyncSocket newSocket);
+		private void DoDidAccept(AsyncSocket newSocket)
+		{
+			// Threading Notes:
+			// If using a SynchronizingObject or AppForms,
+			// this method is executed on the same thread as the SynchronizingObject or AppForm.
+			// Therefore, the closeLockObj cannot create a deadlock with the Close method.
+			// If using multithreaded callbacks, then this method properly prevents
+			// callbacks after disconnection due to the closeLockObj.
+
+			if ((flags & kClosed) != 0) return;
+			
+			try
+			{
+				if (DidAccept != null)
+				{
+					DidAccept(this, newSocket);
+				}
+			}
+			catch { }
+		}
+
+		private delegate bool DoWillConnectDelegate(Socket socket);
+		private bool DoWillConnect(Socket socket)
+		{
+			// Threading Notes:
+			// If using a SynchronizingObject or AppForms,
+			// this method is executed on the same thread as the SynchronizingObject or AppForm.
+			// Therefore, the closeLockObj cannot create a deadlock with the Close method.
+			// If using multithreaded callbacks, then this method properly prevents
+			// callbacks after disconnection due to the closeLockObj.
+
+			if ((flags & kClosed) != 0) return false;
+
 			try
 			{
 				if (WillConnect != null)
 				{
-					if (synchronizingObject != null)
-					{
-						object[] args = { this, socket };
-						return (bool)synchronizingObject.Invoke(WillConnect, args);
-					}
-					else if (allowApplicationForms)
-					{
-						System.Windows.Forms.Form appForm = GetApplicationForm();
-						if (appForm != null)
-						{
-							object[] args = { this, socket };
-							return (bool)appForm.Invoke(WillConnect, args);
-						}
-					}
-					else if (allowMultithreadedCallbacks)
-					{
-						return WillConnect.Invoke(this, socket);
-					}
+					return WillConnect(this, socket);
 				}
 			}
 			catch { }
@@ -412,309 +642,223 @@ namespace Deusty.Net
 			return true;
 		}
 
-		protected virtual void OnSocketDidConnect(IPAddress address, UInt16 port)
+		private delegate void DoDidConnectDelegate(IPAddress address, UInt16 port);
+		private void DoDidConnect(IPAddress address, UInt16 port)
 		{
-			if (DidConnect != null)
+			// Threading Notes:
+			// If using a SynchronizingObject or AppForms,
+			// this method is executed on the same thread as the SynchronizingObject or AppForm.
+			// Therefore, the closeLockObj cannot create a deadlock with the Close method.
+			// If using multithreaded callbacks, then this method properly prevents
+			// callbacks after disconnection due to the closeLockObj.
+
+			if ((flags & kClosed) != 0) return;
+
+			try
 			{
-				if (synchronizingObject != null)
+				if (DidConnect != null)
 				{
-					if (synchronizingObject is System.Windows.Forms.Control)
-					{
-						object[] args = { this, address, port };
-						synchronizingObject.BeginInvoke(DidConnect, args);
-					}
-					else
-					{
-						object[] delPlusArgs = { DidConnect, this, address, port };
-						eventQueue.Enqueue(delPlusArgs);
-						ThreadPool.QueueUserWorkItem(new WaitCallback(DoInvoke));
-					}
-				}
-				else if (allowApplicationForms)
-				{
-					System.Windows.Forms.Form appForm = GetApplicationForm();
-					if (appForm != null)
-					{
-						appForm.BeginInvoke(DidConnect, this, address, port);
-					}
-				}
-				else if (allowMultithreadedCallbacks)
-				{
-					DidConnect.BeginInvoke(this, address, port, new AsyncCallback(FinishDidConnect), null);
+					DidConnect(this, address, port);
 				}
 			}
+			catch { }
 		}
 
-		protected virtual void OnSocketDidRead(Data data, long tag)
+		private delegate void DoDidReadDelegate(Data data, long tag);
+		private void DoDidRead(Data data, long tag)
 		{
-			if (DidRead != null)
+			// Threading Notes:
+			// If using a SynchronizingObject or AppForms,
+			// this method is executed on the same thread as the SynchronizingObject or AppForm.
+			// Therefore, the closeLockObj cannot create a deadlock with the Close method.
+			// If using multithreaded callbacks, then this method properly prevents
+			// callbacks after disconnection due to the closeLockObj.
+
+			if ((flags & kClosed) != 0) return;
+
+			try
 			{
-				if (synchronizingObject != null)
+				if (DidRead != null)
 				{
-					if (synchronizingObject is System.Windows.Forms.Control)
-					{
-						object[] args = { this, data, tag };
-						synchronizingObject.BeginInvoke(DidRead, args);
-					}
-					else
-					{
-						object[] delPlusArgs = { DidRead, this, data, tag };
-						eventQueue.Enqueue(delPlusArgs);
-						ThreadPool.QueueUserWorkItem(new WaitCallback(DoInvoke));
-					}
-				}
-				else if (allowApplicationForms)
-				{
-					System.Windows.Forms.Form appForm = GetApplicationForm();
-					if (appForm != null)
-					{
-						appForm.BeginInvoke(DidRead, this, data, tag);
-					}
-				}
-				else if (allowMultithreadedCallbacks)
-				{
-					DidRead.BeginInvoke(this, data, tag, new AsyncCallback(FinishDidRead), null);
+					DidRead(this, data, tag);
 				}
 			}
+			catch { }
 		}
-
-		protected virtual void OnSocketDidReadPartial(int partialLength, long tag)
+		
+		private delegate void DoDidReadPartialDelegate(int partialLength, long tag);
+		private void DoDidReadPartial(int partialLength, long tag)
 		{
-			if (DidReadPartial != null)
+			// Threading Notes:
+			// If using a SynchronizingObject or AppForms,
+			// this method is executed on the same thread as the SynchronizingObject or AppForm.
+			// Therefore, the closeLockObj cannot create a deadlock with the Close method.
+			// If using multithreaded callbacks, then this method properly prevents
+			// callbacks after disconnection due to the closeLockObj.
+
+			if ((flags & kClosed) != 0) return;
+
+			try
 			{
-				if (synchronizingObject != null)
+				if (DidReadPartial != null)
 				{
-					if (synchronizingObject is System.Windows.Forms.Control)
-					{
-						object[] args = { this, partialLength, tag };
-						synchronizingObject.BeginInvoke(DidReadPartial, args);
-					}
-					else
-					{
-						object[] delPlusArgs = { DidReadPartial, this, partialLength, tag };
-						eventQueue.Enqueue(delPlusArgs);
-						ThreadPool.QueueUserWorkItem(new WaitCallback(DoInvoke));
-					}
-				}
-				else if (allowApplicationForms)
-				{
-					System.Windows.Forms.Form appForm = GetApplicationForm();
-					if (appForm != null)
-					{
-						appForm.BeginInvoke(DidReadPartial, this, partialLength, tag);
-					}
-				}
-				else if (allowMultithreadedCallbacks)
-				{
-					DidReadPartial.BeginInvoke(this, partialLength, tag, new AsyncCallback(FinishDidReadPartial), null);
+					DidReadPartial(this, partialLength, tag);
 				}
 			}
+			catch { }
 		}
 
-		protected virtual void OnSocketDidWrite(long tag)
+		private delegate void DoDidWriteDelegate(long tag);
+		private void DoDidWrite(long tag)
 		{
-			if (DidWrite != null)
+			// Threading Notes:
+			// If using a SynchronizingObject or AppForms,
+			// this method is executed on the same thread as the SynchronizingObject or AppForm.
+			// Therefore, the closeLockObj cannot create a deadlock with the Close method.
+			// If using multithreaded callbacks, then this method properly prevents
+			// callbacks after disconnection due to the closeLockObj.
+
+			if ((flags & kClosed) != 0) return;
+
+			try
 			{
-				if (synchronizingObject != null)
+				if (DidWrite != null)
 				{
-					if (synchronizingObject is System.Windows.Forms.Control)
-					{
-						object[] args = { this, tag };
-						synchronizingObject.BeginInvoke(DidWrite, args);
-					}
-					else
-					{
-						object[] delPlusArgs = { DidWrite, this, tag };
-						eventQueue.Enqueue(delPlusArgs);
-						ThreadPool.QueueUserWorkItem(new WaitCallback(DoInvoke));
-					}
-				}
-				else if (allowApplicationForms)
-				{
-					System.Windows.Forms.Form appForm = GetApplicationForm();
-					if (appForm != null)
-					{
-						appForm.BeginInvoke(DidWrite, this, tag);
-					}
-				}
-				else if (allowMultithreadedCallbacks)
-				{
-					DidWrite.BeginInvoke(this, tag, new AsyncCallback(FinishDidWrite), null);
+					DidWrite(this, tag);
 				}
 			}
+			catch { }
 		}
 
-		protected virtual void OnSocketDidWritePartial(int partialLength, long tag)
+		private delegate void DoDidWritePartialDelegate(int partialLength, long tag);
+		private void DoDidWritePartial(int partialLength, long tag)
 		{
-			if (DidWritePartial != null)
+			// Threading Notes:
+			// If using a SynchronizingObject or AppForms,
+			// this method is executed on the same thread as the SynchronizingObject or AppForm.
+			// Therefore, the closeLockObj cannot create a deadlock with the Close method.
+			// If using multithreaded callbacks, then this method properly prevents
+			// callbacks after disconnection due to the closeLockObj.
+
+			if ((flags & kClosed) != 0) return;
+
+			try
 			{
-				if (synchronizingObject != null)
+				if (DidWritePartial != null)
 				{
-					if (synchronizingObject is System.Windows.Forms.Control)
-					{
-						object[] args = { this, partialLength, tag };
-						synchronizingObject.BeginInvoke(DidWritePartial, args);
-					}
-					else
-					{
-						object[] delPlusArgs = { DidWritePartial, this, partialLength, tag };
-						eventQueue.Enqueue(delPlusArgs);
-						ThreadPool.QueueUserWorkItem(new WaitCallback(DoInvoke));
-					}
-				}
-				else if (allowApplicationForms)
-				{
-					System.Windows.Forms.Form appForm = GetApplicationForm();
-					if (appForm != null)
-					{
-						appForm.BeginInvoke(DidWritePartial, this, partialLength, tag);
-					}
-				}
-				else if (allowMultithreadedCallbacks)
-				{
-					DidWritePartial.BeginInvoke(this, partialLength, tag, new AsyncCallback(FinishDidWritePartial), null);
+					DidWritePartial(this, partialLength, tag);
 				}
 			}
+			catch { }
 		}
 
-		protected virtual void OnSocketDidSecure()
+		private delegate void DoDidSecureDelegate();
+		private void DoDidSecure()
 		{
-			if (DidSecure != null)
+			// Threading Notes:
+			// If using a SynchronizingObject or AppForms,
+			// this method is executed on the same thread as the SynchronizingObject or AppForm.
+			// Therefore, the closeLockObj cannot create a deadlock with the Close method.
+			// If using multithreaded callbacks, then this method properly prevents
+			// callbacks after disconnection due to the closeLockObj.
+
+			if ((flags & kClosed) != 0) return;
+
+			try
 			{
-				if (synchronizingObject != null)
+				if (DidSecure != null)
 				{
-					if (synchronizingObject is System.Windows.Forms.Control)
-					{
-						object[] args = { this };
-						synchronizingObject.BeginInvoke(DidSecure, args);
-					}
-					else
-					{
-						object[] delPlusArgs = { DidSecure, this };
-						eventQueue.Enqueue(delPlusArgs);
-						ThreadPool.QueueUserWorkItem(new WaitCallback(DoInvoke));
-					}
-				}
-				else if (allowApplicationForms)
-				{
-					System.Windows.Forms.Form appForm = GetApplicationForm();
-					if (appForm != null)
-					{
-						appForm.BeginInvoke(DidSecure, this);
-					}
-				}
-				else if (allowMultithreadedCallbacks)
-				{
-					DidSecure.BeginInvoke(this, new AsyncCallback(FinishDidSecure), null);
+					DidSecure(this);
 				}
 			}
+			catch { }
 		}
 
-		private void DoInvoke(object ignore)
+		private delegate void DoWillCloseDelegate(Exception e);
+		private void DoWillClose(Exception e)
 		{
+			// Threading Notes:
+			// If using a SynchronizingObject or AppForms,
+			// this method is executed on the same thread as the SynchronizingObject or AppForm.
+			// Therefore, the closeLockObj cannot create a deadlock with the Close method.
+			// If using multithreaded callbacks, then this method properly prevents
+			// callbacks after disconnection due to the closeLockObj.
+
+			if ((flags & kClosed) != 0) return;
+
+			try
+			{
+				if (WillClose != null)
+				{
+					WillClose(this, e);
+				}
+			}
+			catch { }
+		}
+
+		private delegate void DoDidCloseDelegate();
+		private void DoDidClose()
+		{
+			// Threading Notes:
+			// If using a SynchronizingObject or AppForms,
+			// this method is executed on the same thread as the SynchronizingObject or AppForm.
+			// Therefore, the closeLockObj cannot create a deadlock with the Close method.
+			// If using multithreaded callbacks, then this method properly prevents
+			// callbacks after disconnection due to the closeLockObj.
+
+			try
+			{
+				if (DidClose != null)
+				{
+					DidClose(this);
+				}
+			}
+			catch { }
+		}
+
+		/// <summary>
+		/// Processes event(s) in the event queue.
+		/// If the synchronousFlag is set, then every event in the queue is processed.
+		/// This ensures that the last queued event is processed before returning from this method.
+		/// If the synchronousFlag is not set, then only the next event in the queue is processed.
+		/// </summary>
+		private void ProcessEvent(object synchronousFlag)
+		{
+			bool isSynchronous = false;
+			if (synchronousFlag != null)
+			{
+				if (synchronousFlag is bool)
+				{
+					isSynchronous = (bool)synchronousFlag;
+				}
+			}
+
 			lock (eventQueue)
 			{
-				try
+				do
 				{
+					if (eventQueue.Count == 0) return;
+
 					object[] delPlusArgs = (object[])eventQueue.Dequeue();
 					object[] args = new object[delPlusArgs.Length - 1];
 
 					Delegate del = (Delegate)delPlusArgs[0];
 					Array.Copy(delPlusArgs, 1, args, 0, delPlusArgs.Length - 1);
 
-					if (synchronizingObject != null)
-					{
-						synchronizingObject.Invoke(del, args);
-					}
-					else if (allowApplicationForms)
-					{
-						System.Windows.Forms.Form appForm = GetApplicationForm();
-						if (appForm != null)
-						{
-							appForm.Invoke(del, args);
-						}
-					}
-					else if (allowMultithreadedCallbacks)
+					try
 					{
 						del.DynamicInvoke(args);
 					}
+					catch { }
 				}
-				catch { }
+				while (isSynchronous);
 			}
 		}
 
-		private void FinishDidDisconnect(IAsyncResult iar)
-		{
-			try
-			{
-				DidDisconnect.EndInvoke(iar);
-			}
-			catch { }
-		}
-
-		private void FinishDidAccept(IAsyncResult iar)
-		{
-			try
-			{
-				DidAccept.EndInvoke(iar);
-			}
-			catch { }
-		}
-
-		private void FinishDidConnect(IAsyncResult iar)
-		{
-			try
-			{
-				DidConnect.EndInvoke(iar);
-			}
-			catch { }
-		}
-
-		private void FinishDidRead(IAsyncResult iar)
-		{
-			try
-			{
-				DidRead.EndInvoke(iar);
-			}
-			catch { }
-		}
-
-		private void FinishDidReadPartial(IAsyncResult iar)
-		{
-			try
-			{
-				DidReadPartial.EndInvoke(iar);
-			}
-			catch { }
-		}
-
-		private void FinishDidWrite(IAsyncResult iar)
-		{
-			try
-			{
-				DidWrite.EndInvoke(iar);
-			}
-			catch { }
-		}
-
-		private void FinishDidWritePartial(IAsyncResult iar)
-		{
-			try
-			{
-				DidWritePartial.EndInvoke(iar);
-			}
-			catch { }
-		}
-
-		private void FinishDidSecure(IAsyncResult iar)
-		{
-			try
-			{
-				DidSecure.EndInvoke(iar);
-			}
-			catch { }
-		}
-
+		/// <summary>
+		/// Returns 
+		/// </summary>
+		/// <returns></returns>
 		private System.Windows.Forms.Form GetApplicationForm()
 		{
 			System.Windows.Forms.FormCollection forms = System.Windows.Forms.Application.OpenForms;
@@ -922,20 +1066,26 @@ namespace Deusty.Net
 		{
 			error = null;
 			
-			// Make sure we're not already listening for connections, or already connected
-			if ((flags & kDidPassConnectMethod) > 0)
+			// Make sure we're not closed
+			if ((flags & kClosed) != 0)
 			{
-				String e = "Attempting to connect while connected or accepting connections. Disconnect first.";
-				error = new Exception(e);
+				String msg = "Socket is closed.";
+				error = new Exception(msg);
 				return false;
 			}
 
-			// Reset flags
-			flags = 0;
+			// Make sure we're not already listening for connections, or already connected
+			if ((flags & kDidPassConnectMethod) != 0)
+			{
+				String msg = "Attempting to connect while connected or accepting connections.";
+				error = new Exception(msg);
+				return false;
+			}
 
 			// Extract proper IPAddress(es) from the given hostaddr
-			IPAddress address4;
-			IPAddress address6;
+			IPAddress address4 = null;
+			IPAddress address6 = null;
+
 			if (hostaddr == null)
 			{
 				address4 = IPAddress.Any;
@@ -963,15 +1113,17 @@ namespace Deusty.Net
 							address4 = null;
 							address6 = addr;
 						}
-						else
-						{
-							String format = "hostaddr ({0}) is not a valid IPv4 or IPv6 address";
-							throw new Exception(String.Format(format, hostaddr));
-						}
 					}
 					catch (Exception e)
 					{
 						error = e;
+						return false;
+					}
+
+					if ((address4 == null) && (address6 == null))
+					{
+						String msg = String.Format("hostaddr ({0}) is not a valid IPv4 or IPv6 address", hostaddr);
+						error = new Exception(msg);
 						return false;
 					}
 				}
@@ -1058,29 +1210,31 @@ namespace Deusty.Net
 		/// <param name="iar"></param>
 		private void socket_DidAccept(IAsyncResult iar)
 		{
-			if ((flags & kStop) > 0) return;
-
-			// No reason to lock here
-			try
+			lock (lockObj)
 			{
-				Socket socket = (Socket)iar.AsyncState;
-				
-				Socket newSocket = socket.EndAccept(iar);
-				AsyncSocket newAsyncSocket = new AsyncSocket();
+				if ((flags & kClosed) > 0) return;
 
-				newAsyncSocket.InheritInvokeOptions(this);
-				newAsyncSocket.PreConfigure(newSocket);
+				try
+				{
+					Socket socket = (Socket)iar.AsyncState;
 
-				OnSocketDidAccept(newAsyncSocket);
+					Socket newSocket = socket.EndAccept(iar);
+					AsyncSocket newAsyncSocket = new AsyncSocket();
 
-				newAsyncSocket.PostConfigure();
+					newAsyncSocket.InheritInvokeOptions(this);
+					newAsyncSocket.PreConfigure(newSocket);
 
-				// And listen for more connections
-				socket.BeginAccept(new AsyncCallback(socket_DidAccept), socket);
-			}
-			catch (Exception e)
-			{
-				CloseWithException(e);
+					OnSocketDidAccept(newAsyncSocket);
+
+					newAsyncSocket.PostConfigure();
+
+					// And listen for more connections
+					socket.BeginAccept(new AsyncCallback(socket_DidAccept), socket);
+				}
+				catch (Exception e)
+				{
+					CloseWithException(e);
+				}
 			}
 		}
 
@@ -1116,7 +1270,6 @@ namespace Deusty.Net
 		private void PostConfigure()
 		{
 			// Notify the delegate
-			flags |= kDidCallConnectDelegate;
 			OnSocketDidConnect(RemoteAddress, RemotePort);
 
 			// Immediately deal with any already-queued requests.
@@ -1234,16 +1387,21 @@ namespace Deusty.Net
 		{
 			error = null;
 			
-			// Make sure we're not already connected, or listening for connections
-			if ((flags & kDidPassConnectMethod) > 0)
+			// Make sure we're not closed
+			if ((flags & kClosed) != 0)
 			{
-				String e = "Attempting to connect while connected or accepting connections. Disconnect first.";
-				error = new Exception(e);
+				String msg = "Socket is closed.";
+				error = new Exception(msg);
 				return false;
 			}
 
-			// Reset flags
-			flags = 0;
+			// Make sure we're not already connected, or listening for connections
+			if ((flags & kDidPassConnectMethod) > 0)
+			{
+				String e = "Attempting to connect while connected or accepting connections.";
+				error = new Exception(e);
+				return false;
+			}
 
 			// Attention: Lock within public method.
 			// Note: Should be fine since we can only get this far if the socket is null.
@@ -1252,19 +1410,13 @@ namespace Deusty.Net
 				try
 				{
 					// We're about to start resolving the host name asynchronously.
-					// The catch is that we can't stop this process.
-					// We can stop any asynchronous socket operation by closing the socket.
-					// So to prevent rouge dns queries from affecting future queries,
-					// we tag each dns request with a GUID. If the dns callback has a different
-					// GUID than the current dnsGuid variable, we know we can ignore it.
-					dnsGuid = Guid.NewGuid();
-					ConnectParameters parameters = new ConnectParameters(host, port, dnsGuid);
+					ConnectParameters parameters = new ConnectParameters(host, port);
 
 					// Start time-out timer
 					if (timeout >= 0)
 					{
 						connectTimer = new System.Threading.Timer(new TimerCallback(socket_DidNotConnect),
-						                                          dnsGuid,
+						                                          parameters,
 						                                          timeout,
 						                                          Timeout.Infinite);
 					}
@@ -1295,40 +1447,33 @@ namespace Deusty.Net
 		/// </param>
 		private void Dns_DidResolve(IAsyncResult iar)
 		{
-			// Check to make sure the async socket hasn't been closed/stopped.
-			if ((flags & kStop) > 0) return;
-
 			ConnectParameters parameters = (ConnectParameters)iar.AsyncState;
-
-			// There's one other thing we need to check:
-			// We have no way of stopping an asynchronous dns query.
-			// So we need to make sure this callback is still requested.
-			if (parameters.guid != dnsGuid)
-			{
-				// We no longer need the result of the dns query.
-				// Properly end the async procedure, but ignore the result.
-				try
-				{
-					Dns.EndGetHostAddresses(iar);
-				}
-				catch { }
-
-				return;
-			}
 
 			lock (lockObj)
 			{
+				// Check to make sure the async socket hasn't been closed.
+				if ((flags & kClosed) > 0)
+				{
+					// We no longer need the result of the dns query.
+					// Properly end the async procedure, but ignore the result.
+					try
+					{
+						Dns.EndGetHostAddresses(iar);
+					}
+					catch { }
+					
+					return;
+				}
+
+				IPAddress[] addresses = null;
+
+				bool done = false;
+				bool cancelled = false;
+
 				try
 				{
-					IPAddress[] addresses = Dns.EndGetHostAddresses(iar);
+					addresses = Dns.EndGetHostAddresses(iar);
 
-					if (addresses.Length == 0)
-					{
-						throw new Exception(String.Format("Unable to resolve host \"{0}\"", parameters.host));
-					}
-
-					bool done = false;
-					bool cancelled = false;
 					for (int i = 0; i < addresses.Length && !done && !cancelled; i++)
 					{
 						IPAddress address = addresses[i];
@@ -1375,21 +1520,29 @@ namespace Deusty.Net
 							}
 						}
 					}
-
-					if (cancelled)
-					{
-						throw new Exception("Connection attempt cancelled in WillConnect delegate");
-					}
-
-					if (!done)
-					{
-						String format = "Unable to resolve host \"{0}\" to valid IPv4 or IPv6 address";
-						throw new Exception(String.Format(format, parameters.host));
-					}
 				}
 				catch(Exception e)
 				{
 					CloseWithException(e);
+				}
+
+				if ((addresses == null) || (addresses.Length == 0))
+				{
+					String msg = String.Format("Unable to resolve host \"{0}\"", parameters.host);
+					CloseWithException(new Exception(msg));
+				}
+
+				if (cancelled)
+				{
+					String msg = "Connection attempt cancelled in WillConnect delegate";
+					CloseWithException(new Exception(msg));
+				}
+
+				if (!done)
+				{
+					String format = "Unable to resolve host \"{0}\" to valid IPv4 or IPv6 address";
+					String msg = String.Format(format, parameters.host);
+					CloseWithException(new Exception(msg));
 				}
 			}
 		}
@@ -1404,13 +1557,13 @@ namespace Deusty.Net
 		/// </param>
 		private void socket_DidConnect(IAsyncResult iar)
 		{
-			if ((flags & kStop) > 0) return;
-
 			// We lock in this method to ensure that the SocketDidConnect delegate fires before
 			// processing any reads or writes. ScheduledDequeue methods may be lurking.
 			// Also this ensures the flags are properly updated prior to any other locked method executing.
 			lock (lockObj)
 			{
+				if ((flags & kClosed) > 0) return;
+
 				try
 				{
 					Socket socket = (Socket)iar.AsyncState;
@@ -1421,7 +1574,6 @@ namespace Deusty.Net
 					stream = socketStream;
 
 					// Notify the delegate
-					flags |= kDidCallConnectDelegate;
 					OnSocketDidConnect(RemoteAddress, RemotePort);
 
 					// Cancel the connect timer
@@ -1429,10 +1581,6 @@ namespace Deusty.Net
 					{
 						connectTimer.Dispose();
 						connectTimer = null;
-
-						// The connect timer may have already fired.
-						// To make sure it has no effect, we also clear the dnsGuid.
-						dnsGuid = Guid.Empty;
 					}
 
 					// Immediately deal with any already-queued requests.
@@ -1448,18 +1596,20 @@ namespace Deusty.Net
 
 		/// <summary>
 		/// Called after a connect timeout timer fires.
-		/// This will generally fire on an available thread from the thread pool.
+		/// This will fire on an available thread from the thread pool.
 		/// 
 		/// This method is thread safe.
 		/// </summary>
-		/// <param name="state">state is guid at time of timer start</param>
-		private void socket_DidNotConnect(object state)
+		private void socket_DidNotConnect(object ignore)
 		{
 			lock (lockObj)
 			{
-				Guid guid = (Guid)state;
+				if ((flags & kClosed) > 0) return;
 
-				if (guid == dnsGuid)
+				// The timer may have fired in the middle of the socket_DidConnect method above.
+				// In this case, the lock would have prevented both methods from running at the same time.
+				// Check to make sure we still don't have a socketStream, because if we do then we've connected.
+				if (socketStream == null)
 				{
 					CloseWithException(GetConnectTimeoutException());
 				}
@@ -1615,6 +1765,8 @@ namespace Deusty.Net
 		{
 			lock (lockObj)
 			{
+				if ((flags & kClosed) > 0) return;
+
 				try
 				{
 					if(isTLSClient)
@@ -1673,9 +1825,10 @@ namespace Deusty.Net
 				RecoverUnreadData();
 
 				// Let the delegate know, so it can try to recover if it likes.
-				OnSocketWillDisconnect(e);
+				OnSocketWillClose(e);
 			}
-			Close();
+			
+			Close(null);
 		}
 
 		/// <summary>
@@ -1717,165 +1870,151 @@ namespace Deusty.Net
 		/// <summary>
 		/// Drops pending reads and writes, closes all sockets and stream, and notifies delegate if needed.
 		/// </summary>
-		private void Close()
+		private void Close(object ignore)
 		{
-			flags |= kStop;
-			dnsGuid = Guid.Empty;
+			lock (lockObj)
+			{
+				EmptyQueues();
 
-			EmptyQueues();
+				if (secureSocketStream != null)
+				{
+					secureSocketStream.Close();
+					secureSocketStream = null;
+				}
+				if (socketStream != null)
+				{
+					socketStream.Close();
+					socketStream = null;
+				}
+				if (stream != null)
+				{
+					// Stream is just a pointer to the real stream we're using
+					// I.e. it points to either socketStream of secureSocketStream
+					// Thus we don't close it
+					stream = null;
+				}
+				if (socket6 != null)
+				{
+					socket6.Close();
+					socket6 = null;
+				}
+				if (socket4 != null)
+				{
+					socket4.Close();
+					socket4 = null;
+				}
 
-			if (secureSocketStream != null)
-			{
-				secureSocketStream.Close();
-				secureSocketStream = null;
-			}
-			if (socketStream != null)
-			{
-				socketStream.Close();
-				socketStream = null;
-			}
-			if (stream != null)
-			{
-				// Stream is just a pointer to the real stream we're using
-				// I.e. it points to either socketStream of secureSocketStream
-				// Thus we don't close it
-				stream = null;
-			}
-			if (socket6 != null)
-			{
-				socket6.Close();
-				socket6 = null;
-			}
-			if (socket4 != null)
-			{
-				socket4.Close();
-				socket4 = null;
-			}
+				if (connectTimer != null)
+				{
+					connectTimer.Dispose();
+					connectTimer = null;
+				}
 
-			if ((flags & kDidPassConnectMethod) > 0)
-			{
-				// Remove all flags except stop flag
-				flags = kStop;
+				// The readTimer and writeTimer are cleared in the EmptyQueues method above.
 
-				// Notify delegate that we're now disconnected.
-				// Note that it's safe for the delegate to call Connect() from the callback method.
-				OnSocketDidDisconnect();
-			}
-			else
-			{
-				// Remove all flags except stop flag
-				flags = kStop;
+				if ((flags & kDidPassConnectMethod) > 0)
+				{
+					// Clear flags to signal closed socket
+					flags = (kForbidReadsWrites | kClosed);
+
+					// Notify delegate that we're now disconnected
+					OnSocketDidClose();
+				}
+				else
+				{
+					// Clear flags to signal closed socket
+					flags = (kForbidReadsWrites | kClosed);
+				}
 			}
 		}
 
 		/// <summary>
 		/// Immediately stops all transfers, and releases any socket and stream resources.
 		/// Any pending reads or writes are dropped.
-		/// The AsyncSocket object may be reused after this method is called.
 		/// 
-		/// If the socket is already disconnected, this method does nothing.
+		/// If the socket is already closed, this method does nothing.
 		/// 
 		/// Note: The SocketDidDisconnect method will be called.
 		/// </summary>
-		public void Disconnect()
+		public void Close()
 		{
-			// The reason we have a public Disconnect() method and a private Close() method is because
-			// the functionality matches Socket.Disconnect().
-			// Since AsyncSocket can be resused, it's not the same as Socket.Close().
-			Close();
+			flags |= kClosed;
+
+			ThreadPool.QueueUserWorkItem(new WaitCallback(Close));
 		}
 		
 		/// <summary>
-		/// Immediately stops all transfers, and releases any stream resources.
-		/// However, the base sockets are NOT closed, and the caller now has sole ownership of the sockets.
-		/// 
-		/// Note: The SocketDidDisconnect method will NOT be called.
-		/// </summary>
-		public void Disconnect(out Socket socket4, out Socket socket6)
-		{
-			socket4 = this.socket4;
-			socket6 = this.socket6;
-			
-			this.socket4 = null;
-			this.socket6 = null;
-			
-			flags = 0;
-			
-			Close();
-		}
-		
-		/// <summary>
-		/// Disconnects after all pending reads have completed.
+		/// Closes the socket after all pending reads have completed.
 		/// After calling this, the read and write methods will do nothing.
-		/// The socket will disconnect even if there are still pending writes.
+		/// The socket will close even if there are still pending writes.
 		/// </summary>
-		public void DisconnectAfterReading()
+		public void CloseAfterReading()
 		{
-			flags |= (kForbidReadsWrites | kDisconnectAfterReads);
+			flags |= (kForbidReadsWrites | kCloseAfterReads);
 			
-			// Queue a call to MaybeDisconnect
-			ThreadPool.QueueUserWorkItem(new WaitCallback(MaybeDisconnect));
+			// Queue a call to MaybeClose
+			ThreadPool.QueueUserWorkItem(new WaitCallback(MaybeClose));
 		}
 		
 		/// <summary>
-		/// Disconnects after all pending writes have completed.
+		/// Closes after all pending writes have completed.
 		/// After calling this, the read and write methods will do nothing.
-		/// The socket will disconnect even if there are still pending reads.
+		/// The socket will close even if there are still pending reads.
 		/// </summary>
-		public void DisconnectAfterWriting()
+		public void CloseAfterWriting()
 		{
-			flags |= (kForbidReadsWrites | kDisconnectAfterWrites);
+			flags |= (kForbidReadsWrites | kCloseAfterWrites);
 			
-			// Queue a call to MaybeDisconnect
-			ThreadPool.QueueUserWorkItem(new WaitCallback(MaybeDisconnect));
+			// Queue a call to MaybeClose
+			ThreadPool.QueueUserWorkItem(new WaitCallback(MaybeClose));
 		}
 
 		/// <summary>
-		/// Disconnects after all pending reads and writes have completed.
+		/// Closes after all pending reads and writes have completed.
 		/// After calling this, the read and write methods will do nothing.
 		/// </summary>
-		public void DisconnectAfterReadingAndWriting()
+		public void CloseAfterReadingAndWriting()
 		{
-			flags |= (kForbidReadsWrites | kDisconnectAfterReads | kDisconnectAfterWrites);
+			flags |= (kForbidReadsWrites | kCloseAfterReads | kCloseAfterWrites);
 
-			// Queue a call to MaybeDisconnect
-			ThreadPool.QueueUserWorkItem(new WaitCallback(MaybeDisconnect));
+			// Queue a call to MaybeClose
+			ThreadPool.QueueUserWorkItem(new WaitCallback(MaybeClose));
 		}
 		
-		private void MaybeDisconnect(object ignore)
+		private void MaybeClose(object ignore)
 		{
 			lock (lockObj)
 			{
-				bool shouldDisconnect = false;
+				bool shouldClose = false;
 
-				if ((flags & kDisconnectAfterReads) > 0)
+				if ((flags & kCloseAfterReads) > 0)
 				{
 					if ((readQueue.Count == 0) && (currentRead == null))
 					{
-						if ((flags & kDisconnectAfterWrites) > 0)
+						if ((flags & kCloseAfterWrites) > 0)
 						{
 							if ((writeQueue.Count == 0) && (currentWrite == null))
 							{
-								shouldDisconnect = true;
+								shouldClose = true;
 							}
 						}
 						else
 						{
-							shouldDisconnect = true;
+							shouldClose = true;
 						}
 					}
 				}
-				else if ((flags & kDisconnectAfterWrites) > 0)
+				else if ((flags & kCloseAfterWrites) > 0)
 				{
 					if ((writeQueue.Count == 0) && (currentWrite == null))
 					{
-						shouldDisconnect = true;
+						shouldClose = true;
 					}
 				}
 
-				if (shouldDisconnect)
+				if (shouldClose)
 				{
-					Disconnect();
+					Close(null);
 				}
 			}
 		}
@@ -2207,6 +2346,12 @@ namespace Deusty.Net
 		{
 			lock (lockObj)
 			{
+				if ((flags & kClosed) > 0)
+				{
+					readQueue.Clear();
+					return;
+				}
+
 				if ((currentRead == null) && (stream != null))
 				{
 					if((flags & kPauseReads) > 0)
@@ -2259,18 +2404,18 @@ namespace Deusty.Net
 							}
 						}
 					}
-					else if((flags & kDisconnectAfterReads) > 0)
+					else if((flags & kCloseAfterReads) > 0)
 					{
-						if ((flags & kDisconnectAfterWrites) > 0)
+						if ((flags & kCloseAfterWrites) > 0)
 						{
 							if ((writeQueue.Count == 0) && (currentWrite == null))
 							{
-								Disconnect();
+								Close(null);
 							}
 						}
 						else
 						{
-							Disconnect();
+							Close(null);
 						}
 					}
 				}
@@ -2280,66 +2425,78 @@ namespace Deusty.Net
 		/// <summary>
 		/// This method fills the currentRead buffer with data from the readOverflow variable.
 		/// After this is properly completed, DoFinishRead is called to process the bytes.
+		/// 
+		/// This method is called from MaybeDequeueRead().
+		/// 
+		/// The above method is thread safe, so this method is inherently thread safe.
+		/// It is not explicitly thread safe though, and should not be called outside thread safe methods.
 		/// </summary>
 		private void DoReadOverflow()
 		{
 			Debug.Assert(currentRead.bytesDone == 0);
 			Debug.Assert(readOverflow.Length > 0);
 
-			if (currentRead.readAllAvailableData)
+			try
 			{
-				// We're supposed to read what's available.
-				// What we have in the readOverflow is what we have available, so just use it.
-
-				currentRead.buffer = readOverflow;
-				currentRead.bytesProcessing = readOverflow.Length;
-
-				readOverflow = null;
-			}
-			else if (currentRead.fixedLengthRead)
-			{
-				if (currentRead.buffer.Length < readOverflow.Length)
+				if (currentRead.readAllAvailableData)
 				{
-					byte[] src = readOverflow.ByteArray;
-					byte[] dst = currentRead.buffer.ByteArray;
+					// We're supposed to read what's available.
+					// What we have in the readOverflow is what we have available, so just use it.
 
-					Buffer.BlockCopy(src, 0, dst, 0, dst.Length);
-
-					currentRead.bytesProcessing = dst.Length;
-
-					readOverflow.TrimStart(dst.Length);
-
-					// Note that this is the only case in which the readOverflow isn't emptied.
-					// This is OK because the read is guaranteed to finish in DoFinishRead().
-				}
-				else
-				{
-					byte[] src = readOverflow.ByteArray;
-					byte[] dst = currentRead.buffer.ByteArray;
-
-					Buffer.BlockCopy(src, 0, dst, 0, src.Length);
-
-					currentRead.bytesProcessing = src.Length;
+					currentRead.buffer = readOverflow;
+					currentRead.bytesProcessing = readOverflow.Length;
 
 					readOverflow = null;
 				}
+				else if (currentRead.fixedLengthRead)
+				{
+					if (currentRead.buffer.Length < readOverflow.Length)
+					{
+						byte[] src = readOverflow.ByteArray;
+						byte[] dst = currentRead.buffer.ByteArray;
+
+						Buffer.BlockCopy(src, 0, dst, 0, dst.Length);
+
+						currentRead.bytesProcessing = dst.Length;
+
+						readOverflow.TrimStart(dst.Length);
+
+						// Note that this is the only case in which the readOverflow isn't emptied.
+						// This is OK because the read is guaranteed to finish in DoFinishRead().
+					}
+					else
+					{
+						byte[] src = readOverflow.ByteArray;
+						byte[] dst = currentRead.buffer.ByteArray;
+
+						Buffer.BlockCopy(src, 0, dst, 0, src.Length);
+
+						currentRead.bytesProcessing = src.Length;
+
+						readOverflow = null;
+					}
+				}
+				else
+				{
+					// We're reading up to a termination sequence
+					// So we can just set the currentRead buffer to the readOverflow
+					// and the DoStartRead method will automatically handle any further overflow.
+
+					currentRead.buffer = readOverflow;
+					currentRead.bytesProcessing = readOverflow.Length;
+
+					readOverflow = null;
+				}
+
+				// At this point we've filled a currentRead buffer with some data
+				// And the currentRead.bytesProcessing is set to the amount of data we filled it with
+				// It's now time to process the data.
+				DoFinishRead();
 			}
-			else
+			catch (Exception e)
 			{
-				// We're reading up to a termination sequence
-				// So we can just set the currentRead buffer to the readOverflow
-				// and the DoStartRead method will automatically handle any further overflow.
-
-				currentRead.buffer = readOverflow;
-				currentRead.bytesProcessing = readOverflow.Length;
-
-				readOverflow = null;
+				CloseWithException(e);
 			}
-
-			// At this point we've filled a currentRead buffer with some data
-			// And the currentRead.bytesProcessing is set to the amount of data we filled it with
-			// It's now time to process the data.
-			DoFinishRead();
 		}
 
 		/// <summary>
@@ -2359,29 +2516,20 @@ namespace Deusty.Net
 			try
 			{
 				// Perform an AsyncRead to notify us of when data becomes available on the socket.
-				//
-				// The following should be spelled out:
-				// If the stream in use does not fork off a background thread for the callback,
-				// then it's possible for the delegate to get called prior
-				// to currentRead.iar being set below!
-				// Thus we use a temporary local reference variable to
-				// prevent overwriting a different packet's iar.
-
-				AsyncReadPacket thisRead = currentRead;
 
 				// Determine how much to read
 				int size;
-				if (thisRead.readAllAvailableData)
+				if (currentRead.readAllAvailableData)
 				{
 					size = READALL_CHUNKSIZE;
 
 					// Ensure the buffer is big enough to fit all the data
-					if (thisRead.buffer.Length < (thisRead.bytesDone + size))
+					if (currentRead.buffer.Length < (currentRead.bytesDone + size))
 					{
-						thisRead.buffer.SetLength(thisRead.bytesDone + size);
+						currentRead.buffer.SetLength(currentRead.bytesDone + size);
 					}
 				}
-				else if (thisRead.fixedLengthRead)
+				else if (currentRead.fixedLengthRead)
 				{
 					// We're reading a fixed amount of data, into a fixed size buffer
 					// We'll read up to the chunksize amount
@@ -2389,9 +2537,9 @@ namespace Deusty.Net
 					// The read method is supposed to return smaller chunks as they become available.
 					// However, it doesn't seem to always follow this rule in practice.
 					// 
-					// size = thisRead.buffer.Length - thisRead.bytesDone;
+					// size = currentRead.buffer.Length - currentRead.bytesDone;
 
-					int left = thisRead.buffer.Length - thisRead.bytesDone;
+					int left = currentRead.buffer.Length - currentRead.bytesDone;
 					size = Math.Min(left, READ_CHUNKSIZE);
 				}
 				else
@@ -2400,17 +2548,24 @@ namespace Deusty.Net
 					size = READ_CHUNKSIZE;
 
 					// Ensure the buffer is big enough to fit all the data
-					if (thisRead.buffer.Length < (thisRead.bytesDone + size))
+					if (currentRead.buffer.Length < (currentRead.bytesDone + size))
 					{
-						thisRead.buffer.SetLength(thisRead.bytesDone + size);
+						currentRead.buffer.SetLength(currentRead.bytesDone + size);
 					}
 				}
 
-				thisRead.iar = stream.BeginRead(thisRead.buffer.ByteArray,         // buffer to read data into
-												thisRead.bytesDone,                // buffer offset
-												size,                              // max amout of data to read
-												new AsyncCallback(stream_DidRead), // callback method
-												thisRead);                         // callback info
+				// The following should be spelled out:
+				// If the stream can immediately complete the requested opertion, then
+				// it may not fork off a background thread, meaning
+				// that it's possible for the stream_DidRead method to get called before the
+				// stream.BeginRead method returns below.
+
+				stream.BeginRead(currentRead.buffer.ByteArray,      // buffer to read data into
+				                 currentRead.bytesDone,             // buffer offset
+				                 size,                              // max amout of data to read
+				                 new AsyncCallback(stream_DidRead), // callback method
+				                 currentRead);                      // callback info
+
 			}
 			catch (Exception e)
 			{
@@ -2639,6 +2794,12 @@ namespace Deusty.Net
 		{
 			lock (lockObj)
 			{
+				if ((flags & kClosed) > 0)
+				{
+					writeQueue.Clear();
+					return;
+				}
+
 				if ((currentWrite == null) && (stream != null))
 				{
 					if ((flags & kPauseWrites) > 0)
@@ -2688,18 +2849,18 @@ namespace Deusty.Net
 							}
 						}
 					}
-					else if ((flags & kDisconnectAfterWrites) > 0)
+					else if ((flags & kCloseAfterWrites) > 0)
 					{
-						if ((flags & kDisconnectAfterReads) > 0)
+						if ((flags & kCloseAfterReads) > 0)
 						{
 							if ((readQueue.Count == 0) && (currentRead == null))
 							{
-								Disconnect();
+								Close(null);
 							}
 						}
 						else
 						{
-							Disconnect();
+							Close(null);
 						}
 					}
 				}
@@ -2735,7 +2896,7 @@ namespace Deusty.Net
 						{
 							// We're not done yet, but we have written out some bytes
 							OnSocketDidWritePartial(currentWrite.bytesProcessing, currentWrite.tag);
-							
+
 							DoSendBytes();
 						}
 					}
@@ -2790,20 +2951,19 @@ namespace Deusty.Net
 				int size = currentWrite.buffer.ReadByteArray(out buffer, currentWrite.bytesDone, WRITE_CHUNKSIZE);
 
 				// The following should be spelled out:
-				// If the stream in use does not fork off a background thread for the callback,
-				// then it's possible for the delegate to get called prior
-				// to currentRead.iar being set below!
-				// Thus we use a temporary local reference variable to
-				// prevent overwriting a different packet's iar.
+				// If the stream can immediately complete the requested opertion, then
+				// it may not fork off a background thread, meaning
+				// that it's possible for the stream_DidWrite method to get called before the
+				// stream.BeginWrite method returns below.
 
-				AsyncWritePacket thisWrite = currentWrite;
-				thisWrite.bytesProcessing = size;
-				thisWrite.iar = stream.BeginWrite(buffer,                             // buffer to write from
-												  0,                                  // buffer offset
-												  size,                               // amount of data to send
-												  new AsyncCallback(stream_DidWrite), // callback method
-												  thisWrite);                         // callback info
+				currentWrite.bytesProcessing = size;
 				
+				stream.BeginWrite(buffer,                             // buffer to write from
+				                  0,                                  // buffer offset
+				                  size,                               // amount of data to send
+				                  new AsyncCallback(stream_DidWrite), // callback method
+				                  currentWrite);                      // callback info
+			
 			}
 			else
 			{
@@ -2814,19 +2974,18 @@ namespace Deusty.Net
 				int size = (available < WRITE_CHUNKSIZE) ? available : WRITE_CHUNKSIZE;
 
 				// The following should be spelled out:
-				// If the stream in use does not fork off a background thread for the callback,
-				// then it's possible for the delegate to get called prior
-				// to currentRead.iar being set below!
-				// Thus we use a temporary local reference variable to
-				// prevent overwriting a different packet's iar.
+				// If the stream can immediately complete the requested opertion, then
+				// it may not fork off a background thread, meaning
+				// that it's possible for the stream_DidWrite method to get called before the
+				// stream.BeginWrite method returns below.
 
-				AsyncWritePacket thisWrite = currentWrite;
-				thisWrite.bytesProcessing = size;
-				thisWrite.iar = stream.BeginWrite(thisWrite.buffer.ByteArray,         // buffer to write from
-												  thisWrite.bytesDone,                // buffer offset
-												  size,                               // amount of data to send
-												  new AsyncCallback(stream_DidWrite), // callback method
-												  thisWrite);                         // callback info
+				currentWrite.bytesProcessing = size;
+				
+				stream.BeginWrite(currentWrite.buffer.ByteArray,      // buffer to write from
+				                  currentWrite.bytesDone,             // buffer offset
+				                  size,                               // amount of data to send
+				                  new AsyncCallback(stream_DidWrite), // callback method
+				                  currentWrite);                      // callback info
 
 			}
 		}
@@ -2857,7 +3016,7 @@ namespace Deusty.Net
 				writeTimer.Dispose();
 				writeTimer = null;
 			}
-
+			
 			currentWrite = null;
 		}
 

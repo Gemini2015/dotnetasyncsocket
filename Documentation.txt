@@ -1,0 +1,135 @@
+DotnetAsyncSocket Documentation
+
+-- Overview --
+
+The AsyncSocket class is an asynchronous TCP socket library. Its features include:
+
+- Queued non-blocking reads and writes, with optional timeouts.
+- Automatic socket acceptance when listening for incoming connections.
+- Full IPv4 and IPv6 support.
+- Easy encryption with SSL/TLS.
+
+AsyncSocket was specifically designed for developers implementing TCP based protocols.  Its features make it easier to focus more on the protocol, and less on the underlying socket.
+
+For example, say you're implementing a protocol such as HTTP or POP3, and you need a way to read in a single command.  You know commands are terminated with a CRLF ("\r\n").  All you have to do is call:
+
+AsyncSocket.Read(byte[] term, int optionalTimeout, long tag)
+
+and AsyncSocket will read data from the stream until it encounters the given termination sequence (such as CRLF).
+
+Futhermore, read and write calls are queued.  So you don't have to wait for a previous read/write operation to complete before calling another one.  So if your protocol expects to receive two messages back-to-back, you can simply schedule both read operations at the same time.  This gives you the flexibility to interact with your socket however is easiest for you, instead of bending over backwords for it.
+
+-- Introduction --
+
+Being an asynchronous library, calls to AsyncSocket will not block.  So calling methods like Connect, Read, Write, etc will start or queue the operations in the background and immediately return.  You are notified via events.  Here's an example:
+
+void Form1_Load(object sender, EventArgs e)
+{
+	asyncSocket = new AsyncSocket();
+	asyncSocket.DidConnect += new AsyncSocket.SocketDidConnect(asyncSocket_DidConnect);
+}
+
+void connectButton_Click(object sender, EventArgs e)
+{
+	asyncSocket.Connect("deusty.com", 80);
+	
+	// The above method returns immediately.
+	// AsyncSocket will notify us after it has successfully connected.
+}
+
+void asyncSocket_DidConnect(AsyncSocket sender, IPAddress address, UInt16 port)
+{
+	// Our socket is now connected!
+}
+
+There are event handlers for many different actions such as:
+
+- DidConnect
+- DidRead
+- DidWrite
+- DidDisconnect
+- etc...
+
+-- Queued Operations --
+
+With a typical socket you have to do everything in a particular order.  You can't start reading or writing until the socket is connected, and you have to wait for previous read operations to complete before starting your next read.  If this is how you're used to doing your socket programming, it doesn't seem that odd.  But what this means is that you have to adapt to the socket, instead of the socket adapting to you.  Queued operations give you extra flexibility to make your code simpler and your life easier.
+
+With queued operations, you can schedule read and write operations before the socket is even connected.  After the socket has connected, it will automatically dequeue and start your pending operations.  You can schedule multiple read and write operations at the same time.  You can even schedule an upgrade to TLS to secure your socket.
+
+How does this work?  Take a look at the following code:
+
+void connectButton_Click(object sender, EventArgs e)
+{
+	asyncSocket.Connect("domain.com", 8080);
+
+	// Read and ignore the "Welcome to the domain.com server" message.
+	asyncSocket.Read(AsyncSocket.CRLF, -1, IGNORE_TAG);
+
+	// Send authentication
+	asyncSocket.Write(GetAuthenticationData());
+
+	// Read in auth response from server
+	asyncSocket.Read(AsyncSocket.CRLF, -1, AUTH_RESPONSE_TAG);
+}
+
+void asyncSocket_DidRead(AsyncSocket sender, Data data, long tag)
+{
+	if(tag == AUTH_RESPONSE_TAG)
+	{
+		// Process authentication response...
+	}
+}
+
+Recall that all AsyncSocket methods return immediately.  This means that the method connectButton_Click() didn't block your GUI at all.  AsyncSocket automatically setup the connection for you in the background, and after the socket was connected, it started processing all those read/write operations automatically.  AsyncSocket maintains an internal readQueue and an internal writeQueue.  This means it processes your read operations one at a time, in the order in which you schedule them.  The same is true for write operations, and it will execute reads and writes simultaneously for maximum performance.
+
+-- Transparent IPv6 Support --
+
+IPv6 is the future, and if you're using AsyncSocket you're ready for it.  AsyncSocket has full and transparent support for IPv6 so you never have to worry about it again.  You can pass AsyncSocket an IPv6 address no problem.  And if a domain resolves to an IPv6 address, AsyncSocket will handle it automatically.
+
+-- Server Sockets --
+
+AsyncSocket makes it very easy to implement a server.  Simply call one of the Accept() methods, and AsyncSocket will take care of everything for you.  It will automatically accept incoming connections, notify you, and immediately continue listening for other incoming connections.  Furthermore, it automatically creates AsyncSocket instances for accepted connections, so your server can take advantage of the benefits of AsyncSocket everywhere.
+
+Plus, AsyncSocket automatically accepts both IPv4 and IPv6 connections.  You don't have to worry about a thing.  Just tell AsyncSocket to listen on a certain port, and it takes care of the rest.  You don't have to treat an IPv6 socket any differently than an IPv4 socket.  They're all just AysncSocket instances.  IPvWHAT?  Forget about it!
+
+-- Encryption --
+
+Encryption is simple too.  Say you're connecting to a secure server:
+
+void connectButton_Click(object sender, EventArgs e)
+{
+	asyncSocket.Connect("myBank.com", 443);
+	asyncSocket.StartTLSAsClient("myBank.com", null, null);
+}
+
+void asyncSocket_DidSecure(AsyncSocket sender)
+{
+	// Socket is connected and secured!
+}
+
+Again, recall that all AsyncSocket methods return immediately.  This means that the method connectButton_Click() didn't block your GUI at all.  AsyncSocket automatically connected to the server in the background, and as soon as the connection was established, it automatically started the TLS/SSL handshake to secure the connection.
+
+Let's look at another example.  Many protocols today have an established technique to secure the connection during protocol communication.  That is, a connection is established, some client/server communications occurs, and it is later decided to secure the connection.  This is commonly known as an "upgrade" to TLS, and is often called StartTLS.  If you were writing a server using AsyncSocket, your code might be as easy as this:
+
+void asyncSocket_DidRead(AsyncSocket sender, Data data, long tag)
+{
+	...
+	else if(IsStartTLSCommand(data))
+	{
+		// Send OK response
+		asyncSocket.Write(GetOKResponse());
+
+		// Start TLS
+		asyncSocket.StartTLSAsServer(null, certificateCallback);
+
+		// Start reading in the next command
+		asyncSocket.Read(AsyncSocket.CRLF, -1, 0);
+	}
+	...
+}
+
+When you call the StartTLS method, AsyncSocket queues the operation.  It first finished any previously scheduled read and write operations.  Then it secures the connection, and afterwards it immediately continues processing any read/write operations that may have been scheduled after the upgrade to TLS!
+
+-- Threading --
+
+AsyncSocket is multi-threaded - but that doesn't mean that you have to be!  By default, AsyncSocket automatically executes all delegate methods on the same thread as the primary form.  So no need to pull out your hair worrying about locks and thread safey.  (The developer of AsyncSocket already did that.)  You're free to focus on your code, and you can freely update your GUI in your AsyncSocket event handlers.  Of course, if you'd prefer to use multi-threaded callbacks, you can configure AsyncSocket to do that too.
