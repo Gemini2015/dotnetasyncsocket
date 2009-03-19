@@ -287,7 +287,7 @@ namespace Deusty.Net
 				}
 			}
 		}
-
+			
 		// What is going on with the event handler methods below?
 		// 
 		// The asynchronous nature of this class means that we're very multithreaded.
@@ -328,7 +328,7 @@ namespace Deusty.Net
 				{
 					object[] delPlusArgs = { DidAccept, this, newSocket };
 					eventQueue.Enqueue(delPlusArgs);
-					ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent), false);
+					ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent));
 				}
 			}
 		}
@@ -340,25 +340,31 @@ namespace Deusty.Net
 
 			if (WillConnect != null)
 			{
+				object result = null;
+
 				if (synchronizingObject != null)
 				{
 					object[] args = { socket };
-					return (bool)synchronizingObject.Invoke(new DoWillConnectDelegate(DoWillConnect), args);
+					result = synchronizingObject.Invoke(new DoWillConnectDelegate(DoWillConnect), args);
 				}
 				else if (allowApplicationForms)
 				{
 					System.Windows.Forms.Form appForm = GetApplicationForm();
 					if (appForm != null)
 					{
-						return (bool)appForm.Invoke(new DoWillConnectDelegate(DoWillConnect), socket);
+						result = appForm.Invoke(new DoWillConnectDelegate(DoWillConnect), socket);
 					}
 				}
 				else if (allowMultithreadedCallbacks)
 				{
+					// Note: This is the first event that occurs (for outgoing connection)
+
 					object[] delPlusArgs = { WillConnect, this, socket };
 					eventQueue.Enqueue(delPlusArgs);
-					ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent), true);
+					result = ProcessEvent();
 				}
+
+				return (result == null || !(result is bool)) ? true : (bool)result;
 			}
 
 			return true;
@@ -389,7 +395,7 @@ namespace Deusty.Net
 				{
 					object[] delPlusArgs = { DidConnect, this, address, port };
 					eventQueue.Enqueue(delPlusArgs);
-					ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent), false);
+					ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent));
 				}
 			}
 		}
@@ -418,7 +424,7 @@ namespace Deusty.Net
 				{
 					object[] delPlusArgs = { DidRead, this, data, tag };
 					eventQueue.Enqueue(delPlusArgs);
-					ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent), false);
+					ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent));
 				}
 			}
 		}
@@ -447,7 +453,7 @@ namespace Deusty.Net
 				{
 					object[] delPlusArgs = { DidReadPartial, this, partialLength, tag };
 					eventQueue.Enqueue(delPlusArgs);
-					ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent), false);
+					ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent));
 				}
 			}
 		}
@@ -476,7 +482,7 @@ namespace Deusty.Net
 				{
 					object[] delPlusArgs = { DidWrite, this, tag };
 					eventQueue.Enqueue(delPlusArgs);
-					ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent), false);
+					ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent));
 				}
 			}
 		}
@@ -505,7 +511,7 @@ namespace Deusty.Net
 				{
 					object[] delPlusArgs = { DidWritePartial, this, partialLength, tag };
 					eventQueue.Enqueue(delPlusArgs);
-					ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent), false);
+					ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent));
 				}
 			}
 		}
@@ -533,7 +539,7 @@ namespace Deusty.Net
 				{
 					object[] delPlusArgs = { DidSecure, this };
 					eventQueue.Enqueue(delPlusArgs);
-					ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent), false);
+					ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent));
 				}
 			}
 		}
@@ -560,9 +566,11 @@ namespace Deusty.Net
 				}
 				else if (allowMultithreadedCallbacks)
 				{
+					// Note: This is the second to last event that occurs (for outgoing connection)
+
 					object[] delPlusArgs = { WillClose, this, e };
 					eventQueue.Enqueue(delPlusArgs);
-					ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent), true);
+					ProcessEvent();
 				}
 			}
 		}
@@ -570,8 +578,7 @@ namespace Deusty.Net
 		protected virtual void OnSocketDidClose()
 		{
 			// SYNCHRONOUS
-			// If the client called close, the delegate method should be called during the close operation.
-			// If we called close, then it might as well be synchronous, as we have nothing else to do afterwards.
+			// It might as well be synchronous as we have nothing else to do afterwards.
 
 			if (DidClose != null)
 			{
@@ -589,9 +596,11 @@ namespace Deusty.Net
 				}
 				else if (allowMultithreadedCallbacks)
 				{
+					// Note: This is the last event that occurs (for outgoing connection)
+
 					object[] delPlusArgs = { DidClose, this };
 					eventQueue.Enqueue(delPlusArgs);
-					ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent), true);
+					ProcessEvent();
 				}
 			}
 		}
@@ -600,11 +609,9 @@ namespace Deusty.Net
 		private void DoDidAccept(AsyncSocket newSocket)
 		{
 			// Threading Notes:
-			// If using a SynchronizingObject or AppForms,
-			// this method is executed on the same thread as the SynchronizingObject or AppForm.
-			// Therefore, the closeLockObj cannot create a deadlock with the Close method.
-			// If using multithreaded callbacks, then this method properly prevents
-			// callbacks after disconnection due to the closeLockObj.
+			// This method is called when using a SynchronizingObject or AppForms,
+			// so method is executed on the same thread that the delegate is using.
+			// Thus, the kClosed flag prevents any callbacks after the delegate calls the close method.
 
 			if ((flags & kClosed) != 0) return;
 			
@@ -622,11 +629,9 @@ namespace Deusty.Net
 		private bool DoWillConnect(Socket socket)
 		{
 			// Threading Notes:
-			// If using a SynchronizingObject or AppForms,
-			// this method is executed on the same thread as the SynchronizingObject or AppForm.
-			// Therefore, the closeLockObj cannot create a deadlock with the Close method.
-			// If using multithreaded callbacks, then this method properly prevents
-			// callbacks after disconnection due to the closeLockObj.
+			// This method is called when using a SynchronizingObject or AppForms,
+			// so method is executed on the same thread that the delegate is using.
+			// Thus, the kClosed flag prevents any callbacks after the delegate calls the close method.
 
 			if ((flags & kClosed) != 0) return false;
 
@@ -646,11 +651,9 @@ namespace Deusty.Net
 		private void DoDidConnect(IPAddress address, UInt16 port)
 		{
 			// Threading Notes:
-			// If using a SynchronizingObject or AppForms,
-			// this method is executed on the same thread as the SynchronizingObject or AppForm.
-			// Therefore, the closeLockObj cannot create a deadlock with the Close method.
-			// If using multithreaded callbacks, then this method properly prevents
-			// callbacks after disconnection due to the closeLockObj.
+			// This method is called when using a SynchronizingObject or AppForms,
+			// so method is executed on the same thread that the delegate is using.
+			// Thus, the kClosed flag prevents any callbacks after the delegate calls the close method.
 
 			if ((flags & kClosed) != 0) return;
 
@@ -668,11 +671,9 @@ namespace Deusty.Net
 		private void DoDidRead(Data data, long tag)
 		{
 			// Threading Notes:
-			// If using a SynchronizingObject or AppForms,
-			// this method is executed on the same thread as the SynchronizingObject or AppForm.
-			// Therefore, the closeLockObj cannot create a deadlock with the Close method.
-			// If using multithreaded callbacks, then this method properly prevents
-			// callbacks after disconnection due to the closeLockObj.
+			// This method is called when using a SynchronizingObject or AppForms,
+			// so method is executed on the same thread that the delegate is using.
+			// Thus, the kClosed flag prevents any callbacks after the delegate calls the close method.
 
 			if ((flags & kClosed) != 0) return;
 
@@ -690,11 +691,9 @@ namespace Deusty.Net
 		private void DoDidReadPartial(int partialLength, long tag)
 		{
 			// Threading Notes:
-			// If using a SynchronizingObject or AppForms,
-			// this method is executed on the same thread as the SynchronizingObject or AppForm.
-			// Therefore, the closeLockObj cannot create a deadlock with the Close method.
-			// If using multithreaded callbacks, then this method properly prevents
-			// callbacks after disconnection due to the closeLockObj.
+			// This method is called when using a SynchronizingObject or AppForms,
+			// so method is executed on the same thread that the delegate is using.
+			// Thus, the kClosed flag prevents any callbacks after the delegate calls the close method.
 
 			if ((flags & kClosed) != 0) return;
 
@@ -712,11 +711,9 @@ namespace Deusty.Net
 		private void DoDidWrite(long tag)
 		{
 			// Threading Notes:
-			// If using a SynchronizingObject or AppForms,
-			// this method is executed on the same thread as the SynchronizingObject or AppForm.
-			// Therefore, the closeLockObj cannot create a deadlock with the Close method.
-			// If using multithreaded callbacks, then this method properly prevents
-			// callbacks after disconnection due to the closeLockObj.
+			// This method is called when using a SynchronizingObject or AppForms,
+			// so method is executed on the same thread that the delegate is using.
+			// Thus, the kClosed flag prevents any callbacks after the delegate calls the close method.
 
 			if ((flags & kClosed) != 0) return;
 
@@ -734,11 +731,9 @@ namespace Deusty.Net
 		private void DoDidWritePartial(int partialLength, long tag)
 		{
 			// Threading Notes:
-			// If using a SynchronizingObject or AppForms,
-			// this method is executed on the same thread as the SynchronizingObject or AppForm.
-			// Therefore, the closeLockObj cannot create a deadlock with the Close method.
-			// If using multithreaded callbacks, then this method properly prevents
-			// callbacks after disconnection due to the closeLockObj.
+			// This method is called when using a SynchronizingObject or AppForms,
+			// so method is executed on the same thread that the delegate is using.
+			// Thus, the kClosed flag prevents any callbacks after the delegate calls the close method.
 
 			if ((flags & kClosed) != 0) return;
 
@@ -756,11 +751,9 @@ namespace Deusty.Net
 		private void DoDidSecure()
 		{
 			// Threading Notes:
-			// If using a SynchronizingObject or AppForms,
-			// this method is executed on the same thread as the SynchronizingObject or AppForm.
-			// Therefore, the closeLockObj cannot create a deadlock with the Close method.
-			// If using multithreaded callbacks, then this method properly prevents
-			// callbacks after disconnection due to the closeLockObj.
+			// This method is called when using a SynchronizingObject or AppForms,
+			// so method is executed on the same thread that the delegate is using.
+			// Thus, the kClosed flag prevents any callbacks after the delegate calls the close method.
 
 			if ((flags & kClosed) != 0) return;
 
@@ -778,11 +771,9 @@ namespace Deusty.Net
 		private void DoWillClose(Exception e)
 		{
 			// Threading Notes:
-			// If using a SynchronizingObject or AppForms,
-			// this method is executed on the same thread as the SynchronizingObject or AppForm.
-			// Therefore, the closeLockObj cannot create a deadlock with the Close method.
-			// If using multithreaded callbacks, then this method properly prevents
-			// callbacks after disconnection due to the closeLockObj.
+			// This method is called when using a SynchronizingObject or AppForms,
+			// so method is executed on the same thread that the delegate is using.
+			// Thus, the kClosed flag prevents any callbacks after the delegate calls the close method.
 
 			if ((flags & kClosed) != 0) return;
 
@@ -800,11 +791,9 @@ namespace Deusty.Net
 		private void DoDidClose()
 		{
 			// Threading Notes:
-			// If using a SynchronizingObject or AppForms,
-			// this method is executed on the same thread as the SynchronizingObject or AppForm.
-			// Therefore, the closeLockObj cannot create a deadlock with the Close method.
-			// If using multithreaded callbacks, then this method properly prevents
-			// callbacks after disconnection due to the closeLockObj.
+			// This method is called when using a SynchronizingObject or AppForms,
+			// so method is executed on the same thread that the delegate is using.
+			// Thus, the kClosed flag prevents any callbacks after the delegate calls the close method.
 
 			try
 			{
@@ -817,48 +806,90 @@ namespace Deusty.Net
 		}
 
 		/// <summary>
-		/// Processes event(s) in the event queue.
-		/// If the synchronousFlag is set, then every event in the queue is processed.
-		/// This ensures that the last queued event is processed before returning from this method.
-		/// If the synchronousFlag is not set, then only the next event in the queue is processed.
+		/// Processes a single event in the event queue.
+		/// This method is used in muliti-threaded mode for asynchronous events.
 		/// </summary>
-		private void ProcessEvent(object synchronousFlag)
+		private void ProcessEvent(object ignore)
 		{
-			bool isSynchronous = false;
-			if (synchronousFlag != null)
-			{
-				if (synchronousFlag is bool)
-				{
-					isSynchronous = (bool)synchronousFlag;
-				}
-			}
-
 			lock (eventQueue)
 			{
-				do
+				if (eventQueue.Count == 0) return;
+
+				object[] delPlusArgs = (object[])eventQueue.Dequeue();
+				object[] args = new object[delPlusArgs.Length - 1];
+
+				Delegate del = (Delegate)delPlusArgs[0];
+				Array.Copy(delPlusArgs, 1, args, 0, delPlusArgs.Length - 1);
+
+				bool shouldInvokeDelegate = true;
+
+				if (del == null)
 				{
-					if (eventQueue.Count == 0) return;
+					shouldInvokeDelegate = false;
+				}
+				else if ((flags & kClosed) > 0)
+				{
+					// Note: The DidClose event is synchronous, so it wouldn't use this method
+					shouldInvokeDelegate = false;
+				}
 
-					object[] delPlusArgs = (object[])eventQueue.Dequeue();
-					object[] args = new object[delPlusArgs.Length - 1];
-
-					Delegate del = (Delegate)delPlusArgs[0];
-					Array.Copy(delPlusArgs, 1, args, 0, delPlusArgs.Length - 1);
-
+				if (shouldInvokeDelegate)
+				{
 					try
 					{
 						del.DynamicInvoke(args);
 					}
 					catch { }
 				}
-				while (isSynchronous);
 			}
 		}
 
 		/// <summary>
-		/// Returns 
+		/// Processes every event in the event queue, and returns the value from the last event.
+		/// This method is used in multi-threaded mode for synchronous events.
 		/// </summary>
-		/// <returns></returns>
+		private object ProcessEvent()
+		{
+			lock (eventQueue)
+			{
+				object result = null;
+
+				while (eventQueue.Count > 0)
+				{
+					object[] delPlusArgs = (object[])eventQueue.Dequeue();
+					object[] args = new object[delPlusArgs.Length - 1];
+					
+					Delegate del = (Delegate)delPlusArgs[0];
+					Array.Copy(delPlusArgs, 1, args, 0, delPlusArgs.Length - 1);
+
+					bool shouldInvokeDelegate = true;
+
+					if (del == null)
+					{
+						shouldInvokeDelegate = false;
+					}
+					else if ((flags & kClosed) > 0)
+					{
+						shouldInvokeDelegate = (del == (Delegate)DidClose);
+					}
+
+					if (shouldInvokeDelegate)
+					{
+						try
+						{
+							result = del.DynamicInvoke(args);
+						}
+						catch { }
+					}
+				}
+
+				return result;
+			}
+		}
+
+		/// <summary>
+		/// Returns a form that can be used to invoke an event.
+		/// </summary>
 		private System.Windows.Forms.Form GetApplicationForm()
 		{
 			System.Windows.Forms.FormCollection forms = System.Windows.Forms.Application.OpenForms;
@@ -927,7 +958,7 @@ namespace Deusty.Net
 			// It's only possible to know the progress of our read if we're reading to a certain length
 			// If we're reading to data, we of course have no idea when the data will arrive
 			// If we're reading to timeout, then we have no idea when the next chunk of data will arrive.
-			bool hasTotal = ((thisRead.readAllAvailableData == false) && (thisRead.term == null));
+			bool hasTotal = thisRead.fixedLengthRead;
 			
 			tag = thisRead.tag;
 			bytesDone = thisRead.bytesDone;
@@ -936,7 +967,7 @@ namespace Deusty.Net
 			if (total > 0)
 				return (((float)bytesDone) / ((float)total));
 			else
-				return ((float)1.0);
+				return 1.0f;
 		}
 
 		public float ProgressOfCurrentWrite()
@@ -1840,6 +1871,8 @@ namespace Deusty.Net
 		{
 			if (currentRead != null)
 			{
+				// We never finished the current read.
+				
 				int bytesAvailable = currentRead.bytesDone + currentRead.bytesProcessing;
 
 				if (readOverflow == null)
@@ -1934,7 +1967,7 @@ namespace Deusty.Net
 		/// 
 		/// If the socket is already closed, this method does nothing.
 		/// 
-		/// Note: The SocketDidDisconnect method will be called.
+		/// Note: The SocketDidClose method will be called.
 		/// </summary>
 		public void Close()
 		{
@@ -1985,8 +2018,6 @@ namespace Deusty.Net
 		{
 			lock (lockObj)
 			{
-				bool shouldClose = false;
-
 				if ((flags & kCloseAfterReads) > 0)
 				{
 					if ((readQueue.Count == 0) && (currentRead == null))
@@ -1995,12 +2026,12 @@ namespace Deusty.Net
 						{
 							if ((writeQueue.Count == 0) && (currentWrite == null))
 							{
-								shouldClose = true;
+								Close(null);
 							}
 						}
 						else
 						{
-							shouldClose = true;
+							Close(null);
 						}
 					}
 				}
@@ -2008,19 +2039,14 @@ namespace Deusty.Net
 				{
 					if ((writeQueue.Count == 0) && (currentWrite == null))
 					{
-						shouldClose = true;
+						Close(null);
 					}
-				}
-
-				if (shouldClose)
-				{
-					Close(null);
 				}
 			}
 		}
 
 		/// <summary>
-		/// In the event of an error, this method may be called during SocketWillDisconnect
+		/// In the event of an error, this method may be called during SocketWillClose
 		/// to read any data that's left on the socket.
 		/// </summary>
 		public Data GetUnreadData()
