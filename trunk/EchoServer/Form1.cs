@@ -227,17 +227,23 @@ namespace EchoServer
 			connectedSockets.Add(newSocket);
 #endif
 
-			newSocket.Write(new Data("Welcome to the AsyncSocket Echo Server\r\n"), -1, 0);
+			byte[] data = Encoding.UTF8.GetBytes("Welcome to the AsyncSocket Echo Server\r\n");
+			newSocket.Write(data, -1, 0);
 
 			// Remember: newSocket automatically inherits the invoke options of it's parent (listenSocket).
 		}
 
-		private void asyncSocket_DidRead(AsyncSocket sender, Data data, long tag)
+		private void asyncSocket_DidWrite(AsyncSocket sender, long tag)
+		{
+			sender.Read(AsyncSocket.CRLFData, -1, 0);
+		}
+
+		private void asyncSocket_DidRead(AsyncSocket sender, byte[] data, long tag)
 		{
 			String msg = null;
 			try
 			{
-				msg = Encoding.UTF8.GetString(data.ByteArray);
+				msg = Encoding.UTF8.GetString(data);
 
 #if IS_MULTITHREADED
 				object[] args = { };
@@ -259,11 +265,6 @@ namespace EchoServer
 			// Even if we were unable to write the incoming data to the log,
 			// we're still going to echo it back to the client.
 			sender.Write(data, -1, 0);
-		}
-
-		private void asyncSocket_DidWrite(AsyncSocket sender, long tag)
-		{
-			sender.Read(AsyncSocket.CRLFData, -1, 0);
 		}
 
 		private void asyncSocket_WillClose(AsyncSocket sender, Exception e)

@@ -7,64 +7,152 @@ using System.Collections;
 namespace Deusty.Net
 {
 	/// <summary>
-	/// Provides a common interface to various types of data wrappers.
-	/// This allows for some abstraction of the underlying data,
-	/// whether it be raw bytes, files, or streams.
+	/// Provides an immutable (unchangeable) container for raw data.
 	/// </summary>
-	public interface IData
+	public class Data
 	{
-		/// <summary>
-		/// Returns whether or not the underlying data is a stream or not.
-		/// This may need to be consulted to determine which methods would work best.
-		/// </summary>
-		bool IsStream { get;}
+		///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+		#region Static Method
+		///////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 		/// <summary>
-		/// Returns the length of the data.
+		/// Converts the data to a hexadecimal string format for easy displaying or saving.
 		/// </summary>
-		int Length { get;}
+		public static string ToHexString(byte[] bytes)
+		{
+			if (bytes == null) return null;
+
+			// I can't seem to find a simple way (one-liner) to convert from a byte array to a hex string.
+			// Looping seems to be the only option, and this technique is faster than using StringBuilder.
+
+			char[] hexDigits = { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f' };
+
+			char[] chars = new char[bytes.Length * 2];
+
+			for (int i = 0; i < bytes.Length; i++)
+			{
+				int b = bytes[i];
+				chars[i * 2] = hexDigits[b >> 4];
+				chars[i * 2 + 1] = hexDigits[b & 0xF];
+			}
+			return new String(chars);
+		}
+
+		public static bool IsEqual(Data d1, Data d2)
+		{
+			return IsEqual(d1.ByteArray, d2.ByteArray);
+		}
+
+		public static bool IsEqual(Data d1, int d1Offset, Data d2, int d2Offset, int length)
+		{
+			return IsEqual(d1.ByteArray, d1Offset, d2.ByteArray, d2Offset, length);
+		}
 
 		/// <summary>
-		/// Returns the entire underlying data as a byte array.
-		/// Warning: If the underlying data is a stream, this means the entire stream will be read to completion.
+		/// Compares two byte arrays for equality.
 		/// </summary>
-		byte[] ByteArray { get; }
+		/// <returns>
+		/// True if both byte arrays are non-null, the same length, and are bit-wise equals.
+		/// False otherwise.
+		/// </returns>
+		public static bool IsEqual(byte[] b1, byte[] b2)
+		{
+			if (b1 == null) return false;
+			if (b2 == null) return false;
+
+			if (b1.Length != b2.Length) return false;
+
+			bool match = true;
+
+			for (int i = 0; i < b1.Length && match; i++)
+			{
+				match = (b1[i] == b2[i]);
+			}
+
+			return match;
+		}
 
 		/// <summary>
-		/// Reads a byte at the given index.
+		/// Compares byte arrays for equality, starting at the designated offsets, for the given length.
 		/// </summary>
-		/// <param name="index">The index at which to read.</param>
-		byte this[int index] { get;}
+		/// <returns>
+		/// True if both arrays are non-null, are greater than or equal to offset + length,
+		/// and are bit-wise equal for that length.
+		/// False otherwise.
+		/// </returns>
+		public static bool IsEqual(byte[] b1, int b1Offset, byte[] b2, int b2Offset, int length)
+		{
+			if (b1 == null) return false;
+			if (b2 == null) return false;
+
+			if (b1Offset + length > b1.Length) return false;
+			if (b2Offset + length > b2.Length) return false;
+
+			bool match = true;
+
+			for (int i = 0; i < length && match; i++)
+			{
+				match = (b1[b1Offset + i] == b2[b2Offset + i]);
+			}
+
+			return match;
+		}
 
 		/// <summary>
-		/// Reads a portion of the data into a given byte array.
-		/// If the underlying data is a stream, this method is recommended over ByteArray.
-		/// If the underlying data is NOT a stream, it should be noted that this will result in copied bytes.
-		/// Thus changes to the resulting byte array will not affect this Data object.
+		/// Reads the entire file, and stores the result in a Data object wrapping the read bytes.
+		/// Warning: This method is only to be used for small files.
 		/// </summary>
-		int ReadByteArray(out byte[] result, int offset, int length);
+		/// <param name="filePath">
+		///		Relative or absolute path to file.
+		/// </param>
+		/// <returns>
+		///		A regular Data object, which wraps the read bytes from the file.
+		/// </returns>
+		public static Data ReadFile(string filePath)
+		{
+			Data result = null;
+			FileStream fs = null;
 
-		/// <summary>
-		/// Reads the entire data into a string (using UTF8 encoding).
-		/// Warning: If the underlying data is a stream, this means the entire stream will be read to completion.
-		/// </summary>
-		string ToString();
+			try
+			{
+				fs = new FileStream(filePath, FileMode.Open, FileAccess.Read);
+				result = new Data((int)fs.Length);
 
-		/// <summary>
-		/// Reads the entire data into a string using the given encoding.
-		/// Warning: If the underlying data is a stream, this means the entire stream will be read to completion.
-		/// </summary>
-		/// <param name="enc">The encoding to use to read the data.</param>
-		string ToString(Encoding enc);
-	}
+				int amountRead = fs.Read(result.ByteArray, 0, result.Length);
+				int totalAmountRead = amountRead;
 
-	/// <summary>
-	/// Provides a basic unchangeable IData container for raw or string data.
-	/// </summary>
-	public class Data : IData
-	{
-		protected Encoding enc;
+				while((amountRead > 0) && (totalAmountRead < result.Length))
+				{
+					amountRead = fs.Read(result.ByteArray, totalAmountRead, result.Length - totalAmountRead);
+					totalAmountRead += amountRead;
+				}
+
+				if (totalAmountRead < result.Length)
+				{
+					result = null;
+				}
+			}
+			catch
+			{
+				result = null;
+			}
+			finally
+			{
+				if(fs != null) fs.Close();
+			}
+
+			return result;
+		}
+
+		///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+		#endregion
+		///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
 		protected byte[] buffer;
+
+		///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+		#region Constructors
+		///////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 		/// <summary>
 		/// Creates a new Data object using the given buffer.
@@ -77,6 +165,31 @@ namespace Deusty.Net
 		public Data(byte[] buffer) : this(buffer, false)
 		{
 			// Nothing to do here
+		}
+
+		/// <summary>
+		/// Creates a new Data object using the given buffer.
+		/// If the copy flag is set, this method will create a new buffer, and copy the data from the given buffer into it.
+		/// Thus changes to the given buffer will not affect this Data object.
+		/// Otherwise the new Data object will simply form a wrapper around the given data (without copying anything).
+		/// </summary>
+		/// <param name="buffer">
+		///		Byte array to use for underlying data.
+		/// </param>
+		/// <param name="copy">
+		///		Whether or not to copy data from the given buffer into a new buffer.
+		///	</param>
+		public Data(byte[] buffer, bool copy)
+		{
+			if (copy)
+			{
+				this.buffer = new byte[buffer.Length];
+				Buffer.BlockCopy(buffer, 0, this.buffer, 0, buffer.Length);
+			}
+			else
+			{
+				this.buffer = buffer;
+			}
 		}
 
 		/// <summary>
@@ -94,39 +207,8 @@ namespace Deusty.Net
 		/// </param>
 		public Data(byte[] buffer, int offset, int length)
 		{
-			// By default we use UTF8
-			enc = Encoding.UTF8;
-
 			this.buffer = new byte[length];
 			Buffer.BlockCopy(buffer, offset, this.buffer, 0, length);
-		}
-
-		/// <summary>
-		/// Creates a new Data object using the given buffer.
-		/// If the copy flag is set, this method will create a new buffer, and copy the data from the given buffer into it.
-		/// Thus changes to the given buffer will not affect this Data object.
-		/// Otherwise the new Data object will simply form a wrapper around the given data (without copying anything).
-		/// </summary>
-		/// <param name="buffer">
-		///		Byte array to use for underlying data.
-		/// </param>
-		/// <param name="copy">
-		///		Whether or not to copy data from the given buffer into a new buffer.
-		///	</param>
-		public Data(byte[] buffer, bool copy)
-		{
-			// By default we use UTF8
-			enc = Encoding.UTF8;
-
-			if (copy)
-			{
-				this.buffer = new byte[buffer.Length];
-				Buffer.BlockCopy(buffer, 0, this.buffer, 0, buffer.Length);
-			}
-			else
-			{
-				this.buffer = buffer;
-			}
 		}
 
 		/// <summary>
@@ -138,24 +220,6 @@ namespace Deusty.Net
 		///		Data to use as underlying data.
 		///	</param>
 		public Data(Data data) : this(data.ByteArray, false)
-		{
-			// Nothing to do here
-		}
-
-		/// <summary>
-		/// Creates a new Data object using a specified subset of the given data.
-		/// The data must necessarily be copied (otherwise it would be unsafe).
-		/// </summary>
-		/// <param name="buffer">
-		///		Byte array to use for underlying data.
-		/// </param>
-		/// <param name="offset">
-		///		The offset within data to start reading from.
-		/// </param>
-		/// <param name="data">
-		///		The amount to read from data.
-		/// </param>
-		public Data(Data data, int offset, int length) : this(data.ByteArray, offset, length)
 		{
 			// Nothing to do here
 		}
@@ -180,10 +244,19 @@ namespace Deusty.Net
 		}
 
 		/// <summary>
-		/// Creates a new Data object wrapping a newly created byte array of the given size.
+		/// Creates a new Data object using a specified subset of the given data.
+		/// The data must necessarily be copied (otherwise it would be unsafe).
 		/// </summary>
-		/// <param name="length">The size to make the underlying byte array.</param>
-		public Data(int length) : this((long)length)
+		/// <param name="buffer">
+		///		Byte array to use for underlying data.
+		/// </param>
+		/// <param name="offset">
+		///		The offset within data to start reading from.
+		/// </param>
+		/// <param name="data">
+		///		The amount to read from data.
+		/// </param>
+		public Data(Data data, int offset, int length) : this(data.ByteArray, offset, length)
 		{
 			// Nothing to do here
 		}
@@ -191,12 +264,11 @@ namespace Deusty.Net
 		/// <summary>
 		/// Creates a new Data object wrapping a newly created byte array of the given size.
 		/// </summary>
-		/// <param name="length">The size to make the underlying byte array.</param>
-		public Data(long length)
+		/// <param name="length">
+		///		The size to make the underlying byte array.
+		///	</param>
+		public Data(int length)
 		{
-			// By default we use UTF8
-			enc = Encoding.UTF8;
-
 			buffer = new byte[length];
 		}
 
@@ -213,39 +285,51 @@ namespace Deusty.Net
 		/// </summary>
 		public Data(String str, Encoding enc)
 		{
-			this.enc = enc;
 			this.buffer = enc.GetBytes(str);
 		}
 
-		public bool IsStream
-		{
-			get { return false; }
-		}
+		///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+		#endregion
+		///////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
+		/// <summary>
+		/// Returns the length of the data.
+		/// </summary>
 		public int Length
 		{
 			get { return buffer.Length; }
 		}
 
+		/// <summary>
+		/// Returns the entire underlying data as a byte array.
+		/// Use this method when you need to pass a byte array as a method parameter.
+		/// </summary>
 		public byte[] ByteArray
 		{
 			get { return buffer; }
 		}
 
+		/// <summary>
+		/// Reads a byte at the given index.
+		/// </summary>
+		/// <param name="index">
+		///		The index at which to read.
+		///	</param>
 		public byte this[int index]
 		{
 			get { return buffer[index]; }
 		}
 
-		public int ReadByteArray(out byte[] result, int offset, int length)
+		/// <summary>
+		/// Copies a portion of the data into a given byte array.
+		/// </summary>
+		public void Copy(out byte[] result, int offset, int length)
 		{
-			result = new byte[length];
-			
 			int available = buffer.Length - offset;
 			int realLength = (available < length) ? available : length;
 
+			result = new byte[realLength];
 			Buffer.BlockCopy(buffer, offset, result, 0, realLength);
-			return realLength;
 		}
 
 		/// <summary>
@@ -285,7 +369,7 @@ namespace Deusty.Net
 			else
 			{
 				length = termStartIndex + term.Length - offset;
-				return enc.GetString(buffer, offset, length);
+				return Encoding.UTF8.GetString(buffer, offset, length);
 			}
 		}
 
@@ -353,13 +437,12 @@ namespace Deusty.Net
 
 		/// <summary>
 		/// Reads the entire data into a string.
-		/// If an encoding was set in the constructor, this encoding is used.
-		/// Otherwise, uses the default encoding (UTF8).
+		/// Uses the default encoding (UTF8).
 		/// </summary>
 		/// <returns></returns>
 		public override string ToString()
 		{
-			return enc.GetString(buffer);
+			return Encoding.UTF8.GetString(buffer);
 		}
 
 		/// <summary>
@@ -374,29 +457,6 @@ namespace Deusty.Net
 		public string ToString(Encoding encoding)
 		{
 			return encoding.GetString(buffer);
-		}
-
-		/// <summary>
-		/// Converts the data to a hexadecimal string format for easy displaying or saving.
-		/// </summary>
-		public static string ToHexString(byte[] bytes)
-		{
-			if (bytes == null) return null;
-
-			// I can't seem to find a simple way (one-liner) to convert from a byte array to a hex string.
-			// Looping seems to be the only option, and this technique is faster than using StringBuilder.
-
-			char[] hexDigits = { '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f' };
-
-			char[] chars = new char[bytes.Length * 2];
-
-			for (int i = 0; i < bytes.Length; i++)
-			{
-				int b = bytes[i];
-				chars[i * 2] = hexDigits[b >> 4];
-				chars[i * 2 + 1] = hexDigits[b & 0xF];
-			}
-			return new String(chars);
 		}
 
 		/// <summary>
@@ -470,7 +530,7 @@ namespace Deusty.Net
 	}
 
 	/// <summary>
-	/// Provides a basic changeable IData container for raw or string data.
+	/// Provides a mutable (changeable) container for raw data.
 	/// </summary>
 	public class MutableData : Data
 	{
@@ -487,12 +547,12 @@ namespace Deusty.Net
 			// Nothing to do here
 		}
 
-		public MutableData(byte[] buffer, int offset, int length) : base(buffer, offset, length)
+		public MutableData(byte[] buffer, bool copy) : base(buffer, copy)
 		{
 			// Nothing to do here
 		}
 
-		public MutableData(byte[] buffer, bool copy) : base(buffer, copy)
+		public MutableData(byte[] buffer, int offset, int length) : base(buffer, offset, length)
 		{
 			// Nothing to do here
 		}
@@ -502,22 +562,17 @@ namespace Deusty.Net
 			// Nothing to do here
 		}
 
-		public MutableData(Data data, int offset, int length) : base(data, offset, length)
-		{
-			// Nothing to do here
-		}
-
 		public MutableData(Data data, bool copy) : base(data, copy)
 		{
 			// Nothing to do here
 		}
 
-		public MutableData(int length) : base(length)
+		public MutableData(Data data, int offset, int length) : base(data, offset, length)
 		{
 			// Nothing to do here
 		}
 
-		public MutableData(long length) : base(length)
+		public MutableData(int length) : base(length)
 		{
 			// Nothing to do here
 		}
@@ -788,283 +843,6 @@ namespace Deusty.Net
 			Buffer.BlockCopy(byteArray, offset, newBuffer, index, length);
 			Buffer.BlockCopy(buffer, index, newBuffer, index + length, buffer.Length - index);
 			buffer = newBuffer;
-		}
-	}
-
-	/// <summary>
-	/// The FileData class provides a wrapper around a FileStream.
-	/// </summary>
-	public class FileData : IData, IDisposable
-	{
-		/// <summary>
-		/// Reads the entire file, and stores the result in a Data object wrapping the read bytes.
-		/// For quickly reading small files, this method may be preferred to creating FileData objects,
-		/// as those should be properly disposed.
-		/// </summary>
-		/// <param name="filePath">
-		///		Relative or absolute path to file.
-		/// </param>
-		/// <returns>
-		///		A regular Data object, which wraps the read bytes from the file.
-		/// </returns>
-		public static Data ReadFileData(string filePath)
-		{
-			Data result = null;
-			FileStream fs = null;
-
-			try
-			{
-				fs = new FileStream(filePath, FileMode.Open, FileAccess.Read);
-				result = new Data(fs.Length);
-
-				int amountRead = fs.Read(result.ByteArray, 0, result.Length);
-				int totalAmountRead = amountRead;
-
-				while((amountRead > 0) && (totalAmountRead < result.Length))
-				{
-					amountRead = fs.Read(result.ByteArray, totalAmountRead, result.Length - totalAmountRead);
-					totalAmountRead += amountRead;
-				}
-
-				if (totalAmountRead < result.Length)
-				{
-					throw new Exception("Unable to read file");
-				}
-			}
-			catch
-			{
-				result = null;
-			}
-			finally
-			{
-				if(fs != null) fs.Close();
-			}
-
-			return result;
-		}
-
-		protected Stream stream;
-
-		/// <summary>
-		/// Creates a Data wrapper around a FileStream.
-		/// You should dispose of this object when you're done using it.
-		/// </summary>
-		/// <param name="filePath">
-		///		Relative or absolute path to file.
-		///	</param>
-		public FileData(string filePath)
-		{
-			stream = new FileStream(filePath, FileMode.Open, FileAccess.Read);
-		}
-
-		/// <summary>
-		/// Creates a Data wrapper around a FileStream.
-		/// You should dispose of this object when you're done using it.
-		/// </summary>
-		/// <param name="filePath">
-		///		Relative or absolute path to file.
-		/// </param>
-		/// <param name="sequential">
-		///		If true, uses FileOptions.SequentialScan:
-		///		Indicates that the file is to be accessed sequentially from beginning to end.
-		///		The system can use this as a hint to optimize file caching.
-		///		If an application moves the file pointer for random access, optimum caching may not occur;
-		///		however, correct operation is still guaranteed.
-		///		
-		///		Specifying this flag can increase performance for applications that read large files using sequential access.
-		///		Performance gains can be even more noticeable for applications that read large files mostly sequentially,
-		///		but occasionally skip over small ranges of bytes.
-		/// </param>
-		public FileData(string filePath, bool sequential)
-		{
-			// From the FileStream documentation:
-			// The default buffer size is 8192 bytes (8 KB).
-
-			if(sequential)
-				stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read, 8192, FileOptions.SequentialScan);
-			else
-				stream = new FileStream(filePath, FileMode.Open, FileAccess.Read);
-		}
-
-		public bool IsStream
-		{
-			get { return true; }
-		}
-
-		public int Length
-		{
-			get { return (int)stream.Length; }
-		}
-
-		public byte[] ByteArray
-		{
-			get
-			{
-				byte[] buffer = new byte[stream.Length];
-
-				if (stream.Position != 0)
-				{
-					stream.Seek(0, SeekOrigin.Begin);
-				}
-				stream.Read(buffer, 0, (int)stream.Length);
-				return buffer;
-			}
-		}
-
-		public byte this[int index]
-		{
-			get
-			{
-				byte[] buffer = new byte[1];
-
-				if (stream.Position != index)
-				{
-					stream.Seek(index, SeekOrigin.Begin);
-				}
-				stream.Read(buffer, 0, 1);
-				return buffer[0];
-			}
-		}
-
-		public int ReadByteArray(out byte[] result, int offset, int length)
-		{
-			result = new byte[length];
-
-			if (stream.Position != offset)
-			{
-				stream.Seek(offset, SeekOrigin.Begin);
-			}
-			return stream.Read(result, 0, length);
-		}
-
-		public override string ToString()
-		{
-			return this.ToString(Encoding.UTF8);
-		}
-
-		public string ToString(Encoding encoding)
-		{
-			return encoding.GetString(this.ByteArray);
-		}
-
-		public void Dispose()
-		{
-			stream.Close();
-			stream = null;
-		}
-	}
-
-	/// <summary>
-	/// Reads a file from disk, and compresses it, storing the compressed version in an IData container.
-	/// </summary>
-	public class GZipFileData : IData, IDisposable
-	{
-		protected Stream stream;
-
-		public GZipFileData(string fileName)
-		{
-			Stream fileStream = new FileStream(fileName, FileMode.Open, FileAccess.Read);
-			byte[] buffer = new byte[fileStream.Length];
-
-			// Read the file to ensure it is readable.
-			int count = fileStream.Read(buffer, 0, buffer.Length);
-
-			if (count != buffer.Length)
-			{
-				fileStream.Close();
-				Console.WriteLine("Test Failed: Unable to read data from file");
-				return;
-			}
-			fileStream.Close();
-
-			stream = new MemoryStream();
-
-			// Use the newly created memory stream for the compressed data.
-			GZipStream gzipStream = new GZipStream(stream, CompressionMode.Compress, true);
-			gzipStream.Write(buffer, 0, buffer.Length);
-
-			// Close the stream.
-			gzipStream.Close();
-			Console.WriteLine("GZipFileData: Original size:{0}, Compressed size:{1}", buffer.Length, stream.Length);
-		}
-
-		public bool IsStream
-		{
-			get { return true; }
-		}
-
-		public int Length
-		{
-			get { return (int)stream.Length; }
-		}
-
-		public byte[] ByteArray
-		{
-			get
-			{
-				byte[] buffer = new byte[stream.Length];
-
-				if (stream.Position != 0)
-				{
-					stream.Seek(0, SeekOrigin.Begin);
-				}
-				stream.Read(buffer, 0, (int)stream.Length);
-				return buffer;
-			}
-		}
-
-		public byte[] byteArray()
-		{
-			byte[] buffer = new byte[stream.Length];
-
-			if (stream.Position != 0)
-			{
-				stream.Seek(0, SeekOrigin.Begin);
-			}
-			stream.Read(buffer, 0, (int)stream.Length);
-			return buffer;
-		}
-
-		public byte this[int index]
-		{
-			get
-			{
-				byte[] buffer = new byte[1];
-
-				if (stream.Position != index)
-				{
-					stream.Seek(index, SeekOrigin.Begin);
-				}
-				stream.Read(buffer, 0, 1);
-				return buffer[0];
-			}
-		}
-
-		public int ReadByteArray(out byte[] result, int offset, int length)
-		{
-			result = new byte[length];
-
-			if (stream.Position != offset)
-			{
-				stream.Seek(offset, SeekOrigin.Begin);
-			}
-			return stream.Read(result, 0, length);
-		}
-
-		public override string ToString()
-		{
-			return this.ToString(Encoding.UTF8);
-		}
-
-		public string ToString(Encoding encoding)
-		{
-			return encoding.GetString(this.ByteArray);
-		}
-
-		public void Dispose()
-		{
-			stream.Close();
-			stream = null;
 		}
 	}
 }

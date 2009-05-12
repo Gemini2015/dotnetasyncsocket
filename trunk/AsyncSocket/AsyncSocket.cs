@@ -7,6 +7,7 @@ using System.Threading;
 using System.Diagnostics;
 using System.Net.Security;
 using System.Text;
+using System.Security.Cryptography.X509Certificates;
 
 namespace Deusty.Net
 {
@@ -21,11 +22,11 @@ namespace Deusty.Net
 		public delegate void SocketDidAccept(AsyncSocket sender, AsyncSocket newSocket);
 		public delegate bool SocketWillConnect(AsyncSocket sender, Socket socket);
 		public delegate void SocketDidConnect(AsyncSocket sender, IPAddress address, UInt16 port);
-		public delegate void SocketDidRead(AsyncSocket sender, Data data, long tag);
+		public delegate void SocketDidRead(AsyncSocket sender, byte[] data, long tag);
 		public delegate void SocketDidReadPartial(AsyncSocket sender, int partialLength, long tag);
 		public delegate void SocketDidWrite(AsyncSocket sender, long tag);
 		public delegate void SocketDidWritePartial(AsyncSocket sender, int partialLength, long tag);
-		public delegate void SocketDidSecure(AsyncSocket sender);
+		public delegate void SocketDidSecure(AsyncSocket sender, X509Certificate localCert, X509Certificate remoteCert);
 		public delegate void SocketWillClose(AsyncSocket sender, Exception e);
 		public delegate void SocketDidClose(AsyncSocket sender);
 
@@ -107,6 +108,7 @@ namespace Deusty.Net
 			public int bytesDone;
 			public int bytesProcessing;
 			public int timeout;
+			public int maxLength;
 			public long tag;
 			public bool readAllAvailableData;
 			public bool fixedLengthRead;
@@ -114,6 +116,7 @@ namespace Deusty.Net
 
 			public AsyncReadPacket(MutableData buffer,
 			                               int timeout,
+			                               int maxLength,
 			                              long tag,
 			                              bool readAllAvailableData,
 			                              bool fixedLengthRead,
@@ -123,6 +126,7 @@ namespace Deusty.Net
 				this.bytesDone = 0;
 				this.bytesProcessing = 0;
 				this.timeout = timeout;
+				this.maxLength = maxLength;
 				this.tag = tag;
 				this.readAllAvailableData = readAllAvailableData;
 				this.fixedLengthRead = fixedLengthRead;
@@ -135,18 +139,23 @@ namespace Deusty.Net
 		/// </summary>
 		private class AsyncWritePacket
 		{
-			public IData buffer;
+			public byte[] buffer;
+			public int offset;
+			public int length;
 			public int bytesDone;
 			public int bytesProcessing;
 			public int timeout;
 			public long tag;
 
-			public AsyncWritePacket(IData buffer,
-			                          int bytesDone,
-			                          int timeout,
-			                         long tag)
+			public AsyncWritePacket(byte[] buffer,
+			                         int offset,
+			                         int length,
+			                         int timeout,
+			                        long tag)
 			{
 				this.buffer = buffer;
+				this.offset = offset;
+				this.length = length;
 				this.bytesDone = 0;
 				this.bytesProcessing = 0;
 				this.timeout = timeout;
@@ -306,29 +315,29 @@ namespace Deusty.Net
 
 		protected virtual void OnSocketDidAccept(AsyncSocket newSocket)
 		{
-			// ASYNCHRONOUS
-			// This allows the listening socket to quickly get back to accepting another connection.
+			// SYNCHRONOUS
+			// This allows the newly accepted socket to register to receive the DidConnect event.
 
 			if (DidAccept != null)
 			{
 				if (synchronizingObject != null)
 				{
 					object[] args = { newSocket };
-					synchronizingObject.BeginInvoke(new DoDidAcceptDelegate(DoDidAccept), args);
+					synchronizingObject.Invoke(new DoDidAcceptDelegate(DoDidAccept), args);
 				}
 				else if (allowApplicationForms)
 				{
 					System.Windows.Forms.Form appForm = GetApplicationForm();
 					if (appForm != null)
 					{
-						appForm.BeginInvoke(new DoDidAcceptDelegate(DoDidAccept), newSocket);
+						appForm.Invoke(new DoDidAcceptDelegate(DoDidAccept), newSocket);
 					}
 				}
 				else if (allowMultithreadedCallbacks)
 				{
 					object[] delPlusArgs = { DidAccept, this, newSocket };
 					eventQueue.Enqueue(delPlusArgs);
-					ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent));
+					ProcessEvent();
 				}
 			}
 		}
@@ -400,7 +409,7 @@ namespace Deusty.Net
 			}
 		}
 
-		protected virtual void OnSocketDidRead(Data data, long tag)
+		protected virtual void OnSocketDidRead(byte[] data, long tag)
 		{
 			// ASYNCHRONOUS
 			// This allows the socket to quickly move on to the next read/write operation.
@@ -516,7 +525,7 @@ namespace Deusty.Net
 			}
 		}
 
-		protected virtual void OnSocketDidSecure()
+		protected virtual void OnSocketDidSecure(X509Certificate localCert, X509Certificate remoteCert)
 		{
 			// ASYNCHRONOUS
 			// This allows the socket to quickly move on to previously scheduled read/write operations.
@@ -525,19 +534,20 @@ namespace Deusty.Net
 			{
 				if (synchronizingObject != null)
 				{
-					synchronizingObject.BeginInvoke(new DoDidSecureDelegate(DoDidSecure), null);
+					object[] args = { localCert, remoteCert };
+					synchronizingObject.BeginInvoke(new DoDidSecureDelegate(DoDidSecure), args);
 				}
 				else if (allowApplicationForms)
 				{
 					System.Windows.Forms.Form appForm = GetApplicationForm();
 					if (appForm != null)
 					{
-						appForm.BeginInvoke(new DoDidSecureDelegate(DoDidSecure));
+						appForm.BeginInvoke(new DoDidSecureDelegate(DoDidSecure), localCert, remoteCert);
 					}
 				}
 				else if (allowMultithreadedCallbacks)
 				{
-					object[] delPlusArgs = { DidSecure, this };
+					object[] delPlusArgs = { DidSecure, this, localCert, remoteCert };
 					eventQueue.Enqueue(delPlusArgs);
 					ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent));
 				}
@@ -667,8 +677,8 @@ namespace Deusty.Net
 			catch { }
 		}
 
-		private delegate void DoDidReadDelegate(Data data, long tag);
-		private void DoDidRead(Data data, long tag)
+		private delegate void DoDidReadDelegate(byte[] data, long tag);
+		private void DoDidRead(byte[] data, long tag)
 		{
 			// Threading Notes:
 			// This method is called when using a SynchronizingObject or AppForms,
@@ -747,8 +757,8 @@ namespace Deusty.Net
 			catch { }
 		}
 
-		private delegate void DoDidSecureDelegate();
-		private void DoDidSecure()
+		private delegate void DoDidSecureDelegate(X509Certificate localCert, X509Certificate remoteCert);
+		private void DoDidSecure(X509Certificate localCert, X509Certificate remoteCert)
 		{
 			// Threading Notes:
 			// This method is called when using a SynchronizingObject or AppForms,
@@ -761,7 +771,7 @@ namespace Deusty.Net
 			{
 				if (DidSecure != null)
 				{
-					DidSecure(this);
+					DidSecure(this, localCert, remoteCert);
 				}
 			}
 			catch { }
@@ -1660,6 +1670,7 @@ namespace Deusty.Net
 		private String tlsServerName;
 		private RemoteCertificateValidationCallback tlsRemoteCallback;
 		private LocalCertificateSelectionCallback tlsLocalCallback;
+		private X509Certificate localCertificate;
 
 		/// <summary>
 		/// Secures the stream using SSL/TLS.
@@ -1727,10 +1738,12 @@ namespace Deusty.Net
 		///		selecting the certificate used for authentication.
 		///		Pass null if you don't need this functionality.
 		/// </param>
-		public void StartTLSAsServer(RemoteCertificateValidationCallback rcvc, LocalCertificateSelectionCallback lcsc)
+		public void StartTLSAsServer(X509Certificate serverCertificate, RemoteCertificateValidationCallback rcvc,
+		                                                                  LocalCertificateSelectionCallback lcsc)
 		{
 			// Update tls variables - we'll need to refer to these later when we actually start tls
 			isTLSClient = false;
+			localCertificate = serverCertificate;
 			tlsRemoteCallback = rcvc;
 			tlsLocalCallback = lcsc;
 
@@ -1773,7 +1786,7 @@ namespace Deusty.Net
 					}
 					else
 					{
-						secureSocketStream.BeginAuthenticateAsServer(null,
+						secureSocketStream.BeginAuthenticateAsServer(localCertificate,
 												   new AsyncCallback(secureSocketStream_DidFinish), null);
 					}
 				}
@@ -1816,8 +1829,24 @@ namespace Deusty.Net
 					flags ^= kPauseReads;
 					flags ^= kPauseWrites;
 
+					// Extract X509 certificates
+
+					X509Certificate localCert = null;
+					try
+					{
+						localCert = secureSocketStream.LocalCertificate;
+					}
+					catch { }
+
+					X509Certificate remoteCert = null;
+					try
+					{
+						remoteCert = secureSocketStream.RemoteCertificate;
+					}
+					catch { }
+
 					// Invoke delegate method if needed
-					OnSocketDidSecure();
+					OnSocketDidSecure(localCert, remoteCert);
 					
 					// And finally, resume reading and writing
 					MaybeDequeueRead(null);
@@ -2049,15 +2078,15 @@ namespace Deusty.Net
 		/// In the event of an error, this method may be called during SocketWillClose
 		/// to read any data that's left on the socket.
 		/// </summary>
-		public Data GetUnreadData()
+		public byte[] GetUnreadData()
 		{
 			// Ensure this method will only return data in the event of an error
 			if ((flags & kClosingWithError) == 0) return null;
 
 			if (readOverflow == null)
-				return new Data(0);
+				return new byte[0];
 			else
-				return readOverflow;
+				return readOverflow.ByteArray;
 		}
 
 		///////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -2086,6 +2115,11 @@ namespace Deusty.Net
 		private Exception GetWriteTimeoutException()
 		{
 			return new Exception("Write operation timed out.");
+		}
+
+		private Exception GetReadMaxedOutException()
+		{
+			return new Exception("Read operation reached set maximum length");
 		}
 
 		///////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -2294,7 +2328,7 @@ namespace Deusty.Net
 			MutableData buffer = new MutableData(0);
 
 			// readQueue is synchronized
-			readQueue.Enqueue(new AsyncReadPacket(buffer, timeout, tag, true, false, null));
+			readQueue.Enqueue(new AsyncReadPacket(buffer, timeout, -1, tag, true, false, null));
 
 			// Queue a call to maybeDequeueRead
 			ThreadPool.QueueUserWorkItem(new WaitCallback(MaybeDequeueRead));
@@ -2321,7 +2355,7 @@ namespace Deusty.Net
 			MutableData buffer = new MutableData(length);
 
 			// readQueue is synchronized
-			readQueue.Enqueue(new AsyncReadPacket(buffer, timeout, tag, false, true, null));
+			readQueue.Enqueue(new AsyncReadPacket(buffer, timeout, -1, tag, false, true, null));
 
 			// Queue a call to maybeDequeueRead
 			ThreadPool.QueueUserWorkItem(new WaitCallback(MaybeDequeueRead));
@@ -2332,7 +2366,7 @@ namespace Deusty.Net
 		/// The bytes and the separator are returned by the delegate method.
 		/// 
 		/// If you pass null or zero-length data as the separator, this method will do nothing.
-		/// To read a line from the socket, use the line separator (eg. CRLF for HTTP) as the data parameter.
+		/// To read a line from the socket, use the line separator (e.g. CRLF for HTTP) as the data parameter.
 		/// Note that this method is not character-set aware, so if a separator can occur naturally
 		/// as part of the encoding for a character, the read will prematurely end.
 		/// </summary>
@@ -2353,7 +2387,48 @@ namespace Deusty.Net
 			MutableData buffer = new MutableData(0);
 
 			// readQueue is synchronized
-			readQueue.Enqueue(new AsyncReadPacket(buffer, timeout, tag, false, false, term));
+			readQueue.Enqueue(new AsyncReadPacket(buffer, timeout, -1, tag, false, false, term));
+
+			// Queue a call to MaybeDequeueRead
+			ThreadPool.QueueUserWorkItem(new WaitCallback(MaybeDequeueRead));
+		}
+
+		/// <summary>
+		/// Reads bytes up to and including the passed data parameter, which acts as a separator.
+		/// The bytes and the separator are returned by the delegate method.
+		/// 
+		/// The amount of data read may not surpass the given maxLength (specified in bytes).
+		/// If the max length is surpassed, it is treated the same as a timeout - the socket is closed.
+		/// Pass -1 as maxLength if no length restriction is desired, or simply use the other Read method.
+		/// 
+		/// If you pass null or zero-length data as the separator, or if you pass a maxLength parameter that is
+		/// less than the length of the data parameter, this method will do nothing.
+		/// To read a line from the socket, use the line separator (e.g. CRLF for HTTP) as the data parameter.
+		/// Not that this method is not character-set aware, so if a separator can occur naturally
+		/// as part of the encoding for a character, the read will prematurely end.
+		/// </summary>
+		/// <param name="term">
+		///		The separator/delimeter to use.
+		/// </param>
+		/// <param name="timeout">
+		///		Timeout in milliseconds. Specify negative value for no timeout.
+		/// </param>
+		/// <param name="maxLength">
+		///		Max length of data to read (in bytes). Specify negative value for no max length.
+		/// </param>
+		/// <param name="tag">
+		///		Tag to identify read request.
+		///	</param>
+		public void Read(byte[] term, int timeout, int maxLength, long tag)
+		{
+			if ((term == null) || (term.Length == 0)) return;
+			if ((maxLength >= 0) && (maxLength < term.Length)) return;
+			if ((flags & kForbidReadsWrites) > 0) return;
+
+			MutableData buffer = new MutableData(0);
+
+			// readQueue is synchronized
+			readQueue.Enqueue(new AsyncReadPacket(buffer, timeout, maxLength, tag, false, false, term));
 
 			// Queue a call to MaybeDequeueRead
 			ThreadPool.QueueUserWorkItem(new WaitCallback(MaybeDequeueRead));
@@ -2476,6 +2551,8 @@ namespace Deusty.Net
 				}
 				else if (currentRead.fixedLengthRead)
 				{
+					// We're reading a certain length of data.
+
 					if (currentRead.buffer.Length < readOverflow.Length)
 					{
 						byte[] src = readOverflow.ByteArray;
@@ -2591,7 +2668,6 @@ namespace Deusty.Net
 				                 size,                              // max amout of data to read
 				                 new AsyncCallback(stream_DidRead), // callback method
 				                 currentRead);                      // callback info
-
 			}
 			catch (Exception e)
 			{
@@ -2671,6 +2747,7 @@ namespace Deusty.Net
 
 			int totalBytesRead = 0;
 			bool done = false;
+			bool maxoutError = false;
 
 			if(currentRead.readAllAvailableData)
 			{
@@ -2695,7 +2772,7 @@ namespace Deusty.Net
 				// We're reading up to a terminator
 				// So let's start searching for the termination sequence in the new data
 
-				while (!done && (currentRead.bytesProcessing > 0))
+				while (!done && !maxoutError && (currentRead.bytesProcessing > 0))
 				{
 					currentRead.bytesDone++;
 					totalBytesRead++;
@@ -2709,24 +2786,34 @@ namespace Deusty.Net
 						match = (currentRead.term[i] == currentRead.buffer[offset + i]);
 					}
 					done = match;
+
+					if (!done && (currentRead.maxLength >= 0) && (currentRead.bytesDone >= currentRead.maxLength))
+					{
+						maxoutError = true;
+					}
 				}
+			}
+
+			// If there was any overflow data, extract it and save it.
+			// This may occur if our read maxed out.
+			// Or if we received Y bytes, but only needed X bytes to finish the read (X < Y).
+			if (currentRead.bytesProcessing > 0)
+			{
+				readOverflow = new MutableData(currentRead.buffer, currentRead.bytesDone, currentRead.bytesProcessing);
+				currentRead.bytesProcessing = 0;
 			}
 
 			if (done)
 			{
-				// If there was any overflow data, extract it and save it
-				// I.e. we received Y bytes, but only needed X bytes to finish the read (X < Y)
-				if (currentRead.bytesProcessing > 0)
-				{
-					readOverflow = new MutableData(currentRead.buffer, currentRead.bytesDone, currentRead.bytesProcessing);
-					currentRead.bytesProcessing = 0;
-				}
-
 				// Truncate any excess unused buffer space in the read packet
 				currentRead.buffer.SetLength(currentRead.bytesDone);
 
 				CompleteCurrentRead();
 				ThreadPool.QueueUserWorkItem(new WaitCallback(MaybeDequeueRead));
+			}
+			else if (maxoutError)
+			{
+				CloseWithException(GetReadMaxedOutException());
 			}
 			else
 			{
@@ -2755,7 +2842,7 @@ namespace Deusty.Net
 			EndCurrentRead();
 
 			// Notify delegate if possible
-			OnSocketDidRead(completedRead.buffer, completedRead.tag);
+			OnSocketDidRead(completedRead.buffer.ByteArray, completedRead.tag);
 		}
 
 		/// <summary>
@@ -2785,8 +2872,7 @@ namespace Deusty.Net
 		/// Writes the specified data to the socket.
 		/// </summary>
 		/// <param name="data">
-		///		An object that implements the IData interface.
-		///		The object will be properly handled regardless of whether it's a stream or raw bytes.
+		///		The data to send.
 		/// </param>
 		/// <param name="timeout">
 		///		Timeout in milliseconds. Specify a negative value if no timeout is desired.
@@ -2795,13 +2881,44 @@ namespace Deusty.Net
 		///		A tag that can be used to track the write.
 		///		This tag will be returned in the callback methods.
 		/// </param>
-		public void Write(IData data, int timeout, long tag)
+		public void Write(byte[] data, int timeout, long tag)
 		{
-			if (data.Length == 0) return;
+			if ((data == null) || (data.Length == 0)) return;
 			if ((flags & kForbidReadsWrites) > 0) return;
 
 			// writeQueue is synchronized
-			writeQueue.Enqueue(new AsyncWritePacket(data, 0, timeout, tag));
+			writeQueue.Enqueue(new AsyncWritePacket(data, 0, data.Length, timeout, tag));
+
+			// Queue a call to MaybeDequeueWrite
+			ThreadPool.QueueUserWorkItem(new WaitCallback(MaybeDequeueWrite));
+		}
+
+		/// <summary>
+		/// Writes the specified data to the socket.
+		/// </summary>
+		/// <param name="data">
+		///		The buffer that contains the data to write.
+		/// </param>
+		/// <param name="offset">
+		///		The offset within the given data to start writing from.
+		/// </param>
+		/// <param name="length">
+		///		The amount of data (in bytes) to write from the given data, starting from the given offset.
+		/// </param>
+		/// <param name="timeout">
+		///		Timeout in milliseconds. Specify a negative value if no timeout is desired.
+		/// </param>
+		/// <param name="tag">
+		///		A tag that can be used to track the write.
+		///		This tag will be returned in the callback methods.
+		///	</param>
+		public void Write(byte[] data, int offset, int length, int timeout, long tag)
+		{
+			if ((data == null) || (data.Length == 0)) return;
+			if ((flags & kForbidReadsWrites) > 0) return;
+
+			// writeQueue is synchronized
+			writeQueue.Enqueue(new AsyncWritePacket(data, offset, length, timeout, tag));
 
 			// Queue a call to MaybeDequeueWrite
 			ThreadPool.QueueUserWorkItem(new WaitCallback(MaybeDequeueWrite));
@@ -2894,6 +3011,38 @@ namespace Deusty.Net
 		}
 
 		/// <summary>
+		/// This method is called when either:
+		///  A) a new write is taken from the write queue
+		///  B) or when a previos write has finished.
+		/// 
+		/// More specifically, it is called from either:
+		///  A) MaybeDequeueWrite()
+		///  B) stream_DidWrite()
+		/// 
+		/// The above methods are thread safe, so this method is inherently thread safe.
+		/// It is not explicitly thread safe though, and should not be called outside the above named methods.
+		/// </summary>
+		private void DoSendBytes()
+		{
+			int available = currentWrite.length - currentWrite.bytesDone;
+			int size = (available < WRITE_CHUNKSIZE) ? available : WRITE_CHUNKSIZE;
+
+			// The following should be spelled out:
+			// If the stream can immediately complete the requested opertion, then
+			// it may not fork off a background thread, meaning
+			// that it's possible for the stream_DidWrite method to get called before the
+			// stream.BeginWrite method returns below.
+
+			currentWrite.bytesProcessing = size;
+				
+			stream.BeginWrite(currentWrite.buffer,                          // buffer to write from
+			                  currentWrite.offset + currentWrite.bytesDone, // buffer offset
+			                  size,                                         // amount of data to send
+			                  new AsyncCallback(stream_DidWrite),           // callback method
+			                  currentWrite);                                // callback info
+		}
+
+		/// <summary>
 		/// Called when an asynchronous write has finished.
 		/// This may just be a chunk of the data, and not the entire thing.
 		/// 
@@ -2913,7 +3062,7 @@ namespace Deusty.Net
 						stream.EndWrite(iar);
 						currentWrite.bytesDone += currentWrite.bytesProcessing;
 
-						if (currentWrite.bytesDone == currentWrite.buffer.Length)
+						if (currentWrite.bytesDone == currentWrite.length)
 						{
 							CompleteCurrentWrite();
 							ThreadPool.QueueUserWorkItem(new WaitCallback(MaybeDequeueWrite));
@@ -2951,68 +3100,6 @@ namespace Deusty.Net
 					EndCurrentWrite();
 					CloseWithException(GetWriteTimeoutException());
 				}
-			}
-		}
-
-		/// <summary>
-		/// This method is called when either:
-		///  A) a new write is taken from the write queue
-		///  B) or when a previos write has finished.
-		/// 
-		/// More specifically, it is called from either:
-		///  A) MaybeDequeueWrite()
-		///  B) stream_DidWrite()
-		/// 
-		/// The above methods are thread safe, so this method is inherently thread safe.
-		/// It is not explicitly thread safe though, and should not be called outside the above named methods.
-		/// </summary>
-		private void DoSendBytes()
-		{
-			if (currentWrite.buffer.IsStream)
-			{
-				// We're dealing with an underlying stream
-				// We'll read from the stream only as much data as we're prepared to send
-
-				byte[] buffer;
-				int size = currentWrite.buffer.ReadByteArray(out buffer, currentWrite.bytesDone, WRITE_CHUNKSIZE);
-
-				// The following should be spelled out:
-				// If the stream can immediately complete the requested opertion, then
-				// it may not fork off a background thread, meaning
-				// that it's possible for the stream_DidWrite method to get called before the
-				// stream.BeginWrite method returns below.
-
-				currentWrite.bytesProcessing = size;
-				
-				stream.BeginWrite(buffer,                             // buffer to write from
-				                  0,                                  // buffer offset
-				                  size,                               // amount of data to send
-				                  new AsyncCallback(stream_DidWrite), // callback method
-				                  currentWrite);                      // callback info
-			
-			}
-			else
-			{
-				// We're dealing with a memory store
-				// No need to copy bytes around, we'll simply read straight from the buffer
-
-				int available = currentWrite.buffer.Length - currentWrite.bytesDone;
-				int size = (available < WRITE_CHUNKSIZE) ? available : WRITE_CHUNKSIZE;
-
-				// The following should be spelled out:
-				// If the stream can immediately complete the requested opertion, then
-				// it may not fork off a background thread, meaning
-				// that it's possible for the stream_DidWrite method to get called before the
-				// stream.BeginWrite method returns below.
-
-				currentWrite.bytesProcessing = size;
-				
-				stream.BeginWrite(currentWrite.buffer.ByteArray,      // buffer to write from
-				                  currentWrite.bytesDone,             // buffer offset
-				                  size,                               // amount of data to send
-				                  new AsyncCallback(stream_DidWrite), // callback method
-				                  currentWrite);                      // callback info
-
 			}
 		}
 
