@@ -102,6 +102,7 @@ namespace HttpTest
 			// Register for the events we're interested in
 			asyncSocket.DidConnect += new AsyncSocket.SocketDidConnect(asyncSocket_DidConnect);
 			asyncSocket.DidSecure += new AsyncSocket.SocketDidSecure(asyncSocket_DidSecure);
+			asyncSocket.DidWrite += new AsyncSocket.SocketDidWrite(asyncSocket_DidWrite);
 			asyncSocket.DidRead += new AsyncSocket.SocketDidRead(asyncSocket_DidRead);
 			asyncSocket.DidReadPartial += new AsyncSocket.SocketDidReadPartial(asyncSocket_DidReadPartial);
 			asyncSocket.WillClose += new AsyncSocket.SocketWillClose(asyncSocket_WillClose);
@@ -162,16 +163,15 @@ namespace HttpTest
 			HTTPHeader request = HTTPHeader.CreateRequest("GET", FETCH_REQUEST);
 			request.SetHeaderFieldValue("Host", FETCH_HOST);
 
-			LogInfo("Sending Request:");
-			LogMessage(request.ToString());
+			String requestStr = request.ToString();
 
-			// Convert HTTPHeader object to a Data object.
-			// The Data class is just a simple wrapper around a byte[] array.
-			// You can pass any class that implements the IData interface to AsyncSocket.Write().
-			// There are several other IData classes in the Data.cs file,
-			// including the FileData class which wraps a file, making it quick and easy to send a file.
+			LogInfo("Sending Request:");
+			LogMessage(requestStr);
+
+			// Convert HTTPHeader object to a byte array.
 			
-			Data requestData = new Data(request.ToString());
+			byte[] requestData = Encoding.UTF8.GetBytes(requestStr);
+			Console.WriteLine(Data.ToHexString(requestData));
 
 			// Now write the data over the socket.
 			// This call is asynchronous, and returns immediately.
@@ -233,13 +233,18 @@ namespace HttpTest
 			return true;
 		}
 
-		private void asyncSocket_DidSecure(AsyncSocket sender)
+		private void asyncSocket_DidSecure(AsyncSocket sender, X509Certificate localCert, X509Certificate remoteCert)
 		{
 			LogInfo("Connection secured");
 			SendRequest();
 		}
 
-		private void asyncSocket_DidRead(AsyncSocket sender, Data data, long tag)
+		private void asyncSocket_DidWrite(AsyncSocket sender, long tag)
+		{
+		//	LogInfo("DidWrite: {0}", tag);
+		}
+
+		private void asyncSocket_DidRead(AsyncSocket sender, byte[] data, long tag)
 		{
 		//	LogInfo("DidRead: {0}", tag);
 
@@ -250,7 +255,7 @@ namespace HttpTest
 
 				headerLength += data.Length;
 
-				response.AppendBytes(data.ByteArray);
+				response.AppendBytes(data);
 				if (!response.IsHeaderComplete())
 				{
 					// We don't have a complete header yet
@@ -314,7 +319,7 @@ namespace HttpTest
 				// Write the data to log
 				try
 				{
-					LogMessage(data.ToString());
+					LogMessage(Encoding.UTF8.GetString(data));
 				}
 				catch
 				{
@@ -337,7 +342,7 @@ namespace HttpTest
 					// We have just read in a line with the size of the chunk data, in hex,
 					// possibly followed by a semicolon and extra parameters that can be ignored,
 					// and ending with CRLF
-					String sizeLine = data.ToString();
+					String sizeLine = Encoding.UTF8.GetString(data);
 
 					Int32 chunkSizeInBytes;
 					Int32.TryParse(sizeLine, System.Globalization.NumberStyles.HexNumber, null, out chunkSizeInBytes);
@@ -361,7 +366,7 @@ namespace HttpTest
 					// Write the data to log (excluding trailing CRLF)
 					try
 					{
-						String str = Encoding.UTF8.GetString(data.ByteArray, 0, data.Length - 2);
+						String str = Encoding.UTF8.GetString(data, 0, data.Length - 2);
 						LogMessage(str);
 					}
 					catch
@@ -378,7 +383,7 @@ namespace HttpTest
 					if (data.Length > 2)
 					{
 						LogInfo("Received HTTP Footer:");
-						LogInfo(data.ToString());
+						LogInfo(Encoding.UTF8.GetString(data));
 
 						asyncSocket.Read(AsyncSocket.CRLFData, READ_FOOTER_TIMEOUT, tag);
 					}
