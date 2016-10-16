@@ -227,75 +227,75 @@ namespace Deusty.Net
 			set { mTag = value; }
 		}
 
-		private System.ComponentModel.ISynchronizeInvoke synchronizingObject = null;
-		/// <summary>
-		/// Set the <see cref="System.ComponentModel.ISynchronizeInvoke">ISynchronizeInvoke</see>
-		/// object to use as the invoke object. When returning results from asynchronous calls,
-		/// the Invoke method on this object will be called to pass the results back
-		/// in a thread safe manner.
-		/// </summary>
-		/// <remarks>
-		/// If using in conjunction with a form, it is highly recommended
-		/// that you pass your main <see cref="System.Windows.Forms.Form">form</see> (window) in.
-		/// </remarks>
-		/// <remarks>
-		/// You should configure your invoke options before you start reading/writing.
-		/// It's recommended you don't change your invoke options in the middle of reading/writing.
-		/// </remarks>
-		public System.ComponentModel.ISynchronizeInvoke SynchronizingObject
-		{
-			get { return synchronizingObject; }
-			set { synchronizingObject = value; }
-		}
+		//private System.ComponentModel.ISynchronizeInvoke synchronizingObject = null;
+		///// <summary>
+		///// Set the <see cref="System.ComponentModel.ISynchronizeInvoke">ISynchronizeInvoke</see>
+		///// object to use as the invoke object. When returning results from asynchronous calls,
+		///// the Invoke method on this object will be called to pass the results back
+		///// in a thread safe manner.
+		///// </summary>
+		///// <remarks>
+		///// If using in conjunction with a form, it is highly recommended
+		///// that you pass your main <see cref="System.Windows.Forms.Form">form</see> (window) in.
+		///// </remarks>
+		///// <remarks>
+		///// You should configure your invoke options before you start reading/writing.
+		///// It's recommended you don't change your invoke options in the middle of reading/writing.
+		///// </remarks>
+		//public System.ComponentModel.ISynchronizeInvoke SynchronizingObject
+		//{
+		//	get { return synchronizingObject; }
+		//	set { synchronizingObject = value; }
+		//}
 
-		private bool allowApplicationForms = true;
-		/// <summary>
-		/// Allows the application to attempt to post async replies over the
-		/// application "main loop" by using the message queue of the first available
-		/// open form (window). This is retrieved through
-		/// <see cref="System.Windows.Forms.Application.OpenForms">Application.OpenForms</see>.
-		/// 
-		/// Note: This is true by default.
-		/// </summary>
-		/// <remarks>
-		/// You should configure your invoke options before you start reading/writing.
-		/// It's recommended you don't change your invoke options in the middle of reading/writing.
-		/// </remarks>
-		public bool AllowApplicationForms
-		{
-			get { return allowApplicationForms; }
-			set { allowApplicationForms = value; }
-		}
+		//private bool allowApplicationForms = true;
+		///// <summary>
+		///// Allows the application to attempt to post async replies over the
+		///// application "main loop" by using the message queue of the first available
+		///// open form (window). This is retrieved through
+		///// <see cref="System.Windows.Forms.Application.OpenForms">Application.OpenForms</see>.
+		///// 
+		///// Note: This is true by default.
+		///// </summary>
+		///// <remarks>
+		///// You should configure your invoke options before you start reading/writing.
+		///// It's recommended you don't change your invoke options in the middle of reading/writing.
+		///// </remarks>
+		//public bool AllowApplicationForms
+		//{
+		//	get { return allowApplicationForms; }
+		//	set { allowApplicationForms = value; }
+		//}
 
-		private bool allowMultithreadedCallbacks = false;
-		/// <summary>
-		/// If set to true, <see cref="AllowApplicationForms">AllowApplicationForms</see>
-		/// is set to false and <see cref="SynchronizingObject">SynchronizingObject</see> is set
-		/// to null. Any time an asynchronous method needs to invoke a delegate method
-		/// it will run the method in its own thread.
-		/// </summary>
-		/// <remarks>
-		/// If set to true, you will have to handle any synchronization needed.
-		/// If your application uses Windows.Forms or any other non-thread safe
-		/// library, then you will have to do your own invoking.
-		/// </remarks>
-		/// <remarks>
-		/// You should configure your invoke options before you start reading/writing.
-		/// It's recommended you don't change your invoke options in the middle of reading/writing.
-		/// </remarks>
-		public bool AllowMultithreadedCallbacks
-		{
-			get { return allowMultithreadedCallbacks; }
-			set
-			{
-				allowMultithreadedCallbacks = value;
-				if (allowMultithreadedCallbacks)
-				{
-					allowApplicationForms = false;
-					synchronizingObject = null;
-				}
-			}
-		}
+		//private bool allowMultithreadedCallbacks = false;
+		///// <summary>
+		///// If set to true, <see cref="AllowApplicationForms">AllowApplicationForms</see>
+		///// is set to false and <see cref="SynchronizingObject">SynchronizingObject</see> is set
+		///// to null. Any time an asynchronous method needs to invoke a delegate method
+		///// it will run the method in its own thread.
+		///// </summary>
+		///// <remarks>
+		///// If set to true, you will have to handle any synchronization needed.
+		///// If your application uses Windows.Forms or any other non-thread safe
+		///// library, then you will have to do your own invoking.
+		///// </remarks>
+		///// <remarks>
+		///// You should configure your invoke options before you start reading/writing.
+		///// It's recommended you don't change your invoke options in the middle of reading/writing.
+		///// </remarks>
+		//public bool AllowMultithreadedCallbacks
+		//{
+		//	get { return allowMultithreadedCallbacks; }
+		//	set
+		//	{
+		//		allowMultithreadedCallbacks = value;
+		//		if (allowMultithreadedCallbacks)
+		//		{
+		//			allowApplicationForms = false;
+		//			synchronizingObject = null;
+		//		}
+		//	}
+		//}
 			
 		// What is going on with the event handler methods below?
 		// 
@@ -320,25 +320,25 @@ namespace Deusty.Net
 
 			if (DidAccept != null)
 			{
-				if (synchronizingObject != null)
-				{
-					object[] args = { newSocket };
-					synchronizingObject.Invoke(new DoDidAcceptDelegate(DoDidAccept), args);
-				}
-				else if (allowApplicationForms)
-				{
-					System.Windows.Forms.Form appForm = GetApplicationForm();
-					if (appForm != null)
-					{
-						appForm.Invoke(new DoDidAcceptDelegate(DoDidAccept), newSocket);
-					}
-				}
-				else if (allowMultithreadedCallbacks)
-				{
-					object[] delPlusArgs = { DidAccept, this, newSocket };
-					eventQueue.Enqueue(delPlusArgs);
-					ProcessEvent();
-				}
+				//if (synchronizingObject != null)
+				//{
+				//	object[] args = { newSocket };
+				//	synchronizingObject.Invoke(new DoDidAcceptDelegate(DoDidAccept), args);
+				//}
+				//else if (allowApplicationForms)
+				//{
+				//	System.Windows.Forms.Form appForm = GetApplicationForm();
+				//	if (appForm != null)
+				//	{
+				//		appForm.Invoke(new DoDidAcceptDelegate(DoDidAccept), newSocket);
+				//	}
+				//}
+				//else if (allowMultithreadedCallbacks)
+				//{
+				//	object[] delPlusArgs = { DidAccept, this, newSocket };
+				//	eventQueue.Enqueue(delPlusArgs);
+				//	ProcessEvent();
+				//}
 			}
 		}
 
@@ -351,27 +351,27 @@ namespace Deusty.Net
 			{
 				object result = null;
 
-				if (synchronizingObject != null)
-				{
-					object[] args = { socket };
-					result = synchronizingObject.Invoke(new DoWillConnectDelegate(DoWillConnect), args);
-				}
-				else if (allowApplicationForms)
-				{
-					System.Windows.Forms.Form appForm = GetApplicationForm();
-					if (appForm != null)
-					{
-						result = appForm.Invoke(new DoWillConnectDelegate(DoWillConnect), socket);
-					}
-				}
-				else if (allowMultithreadedCallbacks)
-				{
-					// Note: This is the first event that occurs (for outgoing connection)
+				//if (synchronizingObject != null)
+				//{
+				//	object[] args = { socket };
+				//	result = synchronizingObject.Invoke(new DoWillConnectDelegate(DoWillConnect), args);
+				//}
+				//else if (allowApplicationForms)
+				//{
+				//	System.Windows.Forms.Form appForm = GetApplicationForm();
+				//	if (appForm != null)
+				//	{
+				//		result = appForm.Invoke(new DoWillConnectDelegate(DoWillConnect), socket);
+				//	}
+				//}
+				//else if (allowMultithreadedCallbacks)
+				//{
+				//	// Note: This is the first event that occurs (for outgoing connection)
 
-					object[] delPlusArgs = { WillConnect, this, socket };
-					eventQueue.Enqueue(delPlusArgs);
-					result = ProcessEvent();
-				}
+				//	object[] delPlusArgs = { WillConnect, this, socket };
+				//	eventQueue.Enqueue(delPlusArgs);
+				//	result = ProcessEvent();
+				//}
 
 				return (result == null || !(result is bool)) ? true : (bool)result;
 			}
@@ -387,25 +387,25 @@ namespace Deusty.Net
 
 			if (DidConnect != null)
 			{
-				if (synchronizingObject != null)
-				{
-					object[] args = { address, port };
-					synchronizingObject.BeginInvoke(new DoDidConnectDelegate(DoDidConnect), args);
-				}
-				else if (allowApplicationForms)
-				{
-					System.Windows.Forms.Form appForm = GetApplicationForm();
-					if (appForm != null)
-					{
-						appForm.BeginInvoke(new DoDidConnectDelegate(DoDidConnect), address, port);
-					}
-				}
-				else if (allowMultithreadedCallbacks)
-				{
-					object[] delPlusArgs = { DidConnect, this, address, port };
-					eventQueue.Enqueue(delPlusArgs);
-					ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent));
-				}
+				//if (synchronizingObject != null)
+				//{
+				//	object[] args = { address, port };
+				//	synchronizingObject.BeginInvoke(new DoDidConnectDelegate(DoDidConnect), args);
+				//}
+				//else if (allowApplicationForms)
+				//{
+				//	System.Windows.Forms.Form appForm = GetApplicationForm();
+				//	if (appForm != null)
+				//	{
+				//		appForm.BeginInvoke(new DoDidConnectDelegate(DoDidConnect), address, port);
+				//	}
+				//}
+				//else if (allowMultithreadedCallbacks)
+				//{
+				//	object[] delPlusArgs = { DidConnect, this, address, port };
+				//	eventQueue.Enqueue(delPlusArgs);
+				//	ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent));
+				//}
 			}
 		}
 
@@ -416,25 +416,25 @@ namespace Deusty.Net
 
 			if (DidRead != null)
 			{
-				if (synchronizingObject != null)
-				{
-					object[] args = { data, tag };
-					synchronizingObject.BeginInvoke(new DoDidReadDelegate(DoDidRead), args);
-				}
-				else if (allowApplicationForms)
-				{
-					System.Windows.Forms.Form appForm = GetApplicationForm();
-					if (appForm != null)
-					{
-						appForm.BeginInvoke(new DoDidReadDelegate(DoDidRead), data, tag);
-					}
-				}
-				else if (allowMultithreadedCallbacks)
-				{
-					object[] delPlusArgs = { DidRead, this, data, tag };
-					eventQueue.Enqueue(delPlusArgs);
-					ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent));
-				}
+				//if (synchronizingObject != null)
+				//{
+				//	object[] args = { data, tag };
+				//	synchronizingObject.BeginInvoke(new DoDidReadDelegate(DoDidRead), args);
+				//}
+				//else if (allowApplicationForms)
+				//{
+				//	System.Windows.Forms.Form appForm = GetApplicationForm();
+				//	if (appForm != null)
+				//	{
+				//		appForm.BeginInvoke(new DoDidReadDelegate(DoDidRead), data, tag);
+				//	}
+				//}
+				//else if (allowMultithreadedCallbacks)
+				//{
+				//	object[] delPlusArgs = { DidRead, this, data, tag };
+				//	eventQueue.Enqueue(delPlusArgs);
+				//	ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent));
+				//}
 			}
 		}
 
@@ -445,25 +445,25 @@ namespace Deusty.Net
 
 			if (DidReadPartial != null)
 			{
-				if (synchronizingObject != null)
-				{
-					object[] args = { partialLength, tag };
-					synchronizingObject.BeginInvoke(new DoDidReadPartialDelegate(DoDidReadPartial), args);
-				}
-				else if (allowApplicationForms)
-				{
-					System.Windows.Forms.Form appForm = GetApplicationForm();
-					if (appForm != null)
-					{
-						appForm.BeginInvoke(new DoDidReadPartialDelegate(DoDidReadPartial), partialLength, tag);
-					}
-				}
-				else if (allowMultithreadedCallbacks)
-				{
-					object[] delPlusArgs = { DidReadPartial, this, partialLength, tag };
-					eventQueue.Enqueue(delPlusArgs);
-					ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent));
-				}
+				//if (synchronizingObject != null)
+				//{
+				//	object[] args = { partialLength, tag };
+				//	synchronizingObject.BeginInvoke(new DoDidReadPartialDelegate(DoDidReadPartial), args);
+				//}
+				//else if (allowApplicationForms)
+				//{
+				//	System.Windows.Forms.Form appForm = GetApplicationForm();
+				//	if (appForm != null)
+				//	{
+				//		appForm.BeginInvoke(new DoDidReadPartialDelegate(DoDidReadPartial), partialLength, tag);
+				//	}
+				//}
+				//else if (allowMultithreadedCallbacks)
+				//{
+				//	object[] delPlusArgs = { DidReadPartial, this, partialLength, tag };
+				//	eventQueue.Enqueue(delPlusArgs);
+				//	ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent));
+				//}
 			}
 		}
 
@@ -474,25 +474,25 @@ namespace Deusty.Net
 
 			if (DidWrite != null)
 			{
-				if (synchronizingObject != null)
-				{
-					object[] args = { tag };
-					synchronizingObject.BeginInvoke(new DoDidWriteDelegate(DoDidWrite), args);
-				}
-				else if (allowApplicationForms)
-				{
-					System.Windows.Forms.Form appForm = GetApplicationForm();
-					if (appForm != null)
-					{
-						appForm.BeginInvoke(new DoDidWriteDelegate(DoDidWrite), tag);
-					}
-				}
-				else if (allowMultithreadedCallbacks)
-				{
-					object[] delPlusArgs = { DidWrite, this, tag };
-					eventQueue.Enqueue(delPlusArgs);
-					ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent));
-				}
+				//if (synchronizingObject != null)
+				//{
+				//	object[] args = { tag };
+				//	synchronizingObject.BeginInvoke(new DoDidWriteDelegate(DoDidWrite), args);
+				//}
+				//else if (allowApplicationForms)
+				//{
+				//	System.Windows.Forms.Form appForm = GetApplicationForm();
+				//	if (appForm != null)
+				//	{
+				//		appForm.BeginInvoke(new DoDidWriteDelegate(DoDidWrite), tag);
+				//	}
+				//}
+				//else if (allowMultithreadedCallbacks)
+				//{
+				//	object[] delPlusArgs = { DidWrite, this, tag };
+				//	eventQueue.Enqueue(delPlusArgs);
+				//	ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent));
+				//}
 			}
 		}
 
@@ -503,25 +503,25 @@ namespace Deusty.Net
 
 			if (DidWritePartial != null)
 			{
-				if (synchronizingObject != null)
-				{
-					object[] args = { partialLength, tag };
-					synchronizingObject.BeginInvoke(new DoDidWritePartialDelegate(DoDidWritePartial), args);
-				}
-				else if (allowApplicationForms)
-				{
-					System.Windows.Forms.Form appForm = GetApplicationForm();
-					if (appForm != null)
-					{
-						appForm.BeginInvoke(new DoDidWritePartialDelegate(DoDidWritePartial), partialLength, tag);
-					}
-				}
-				else if (allowMultithreadedCallbacks)
-				{
-					object[] delPlusArgs = { DidWritePartial, this, partialLength, tag };
-					eventQueue.Enqueue(delPlusArgs);
-					ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent));
-				}
+				//if (synchronizingObject != null)
+				//{
+				//	object[] args = { partialLength, tag };
+				//	synchronizingObject.BeginInvoke(new DoDidWritePartialDelegate(DoDidWritePartial), args);
+				//}
+				//else if (allowApplicationForms)
+				//{
+				//	System.Windows.Forms.Form appForm = GetApplicationForm();
+				//	if (appForm != null)
+				//	{
+				//		appForm.BeginInvoke(new DoDidWritePartialDelegate(DoDidWritePartial), partialLength, tag);
+				//	}
+				//}
+				//else if (allowMultithreadedCallbacks)
+				//{
+				//	object[] delPlusArgs = { DidWritePartial, this, partialLength, tag };
+				//	eventQueue.Enqueue(delPlusArgs);
+				//	ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent));
+				//}
 			}
 		}
 
@@ -532,25 +532,25 @@ namespace Deusty.Net
 
 			if (DidSecure != null)
 			{
-				if (synchronizingObject != null)
-				{
-					object[] args = { localCert, remoteCert };
-					synchronizingObject.BeginInvoke(new DoDidSecureDelegate(DoDidSecure), args);
-				}
-				else if (allowApplicationForms)
-				{
-					System.Windows.Forms.Form appForm = GetApplicationForm();
-					if (appForm != null)
-					{
-						appForm.BeginInvoke(new DoDidSecureDelegate(DoDidSecure), localCert, remoteCert);
-					}
-				}
-				else if (allowMultithreadedCallbacks)
-				{
-					object[] delPlusArgs = { DidSecure, this, localCert, remoteCert };
-					eventQueue.Enqueue(delPlusArgs);
-					ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent));
-				}
+				//if (synchronizingObject != null)
+				//{
+				//	object[] args = { localCert, remoteCert };
+				//	synchronizingObject.BeginInvoke(new DoDidSecureDelegate(DoDidSecure), args);
+				//}
+				//else if (allowApplicationForms)
+				//{
+				//	System.Windows.Forms.Form appForm = GetApplicationForm();
+				//	if (appForm != null)
+				//	{
+				//		appForm.BeginInvoke(new DoDidSecureDelegate(DoDidSecure), localCert, remoteCert);
+				//	}
+				//}
+				//else if (allowMultithreadedCallbacks)
+				//{
+				//	object[] delPlusArgs = { DidSecure, this, localCert, remoteCert };
+				//	eventQueue.Enqueue(delPlusArgs);
+				//	ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent));
+				//}
 			}
 		}
 
@@ -561,27 +561,27 @@ namespace Deusty.Net
 
 			if (WillClose != null)
 			{
-				if (synchronizingObject != null)
-				{
-					object[] args = { e };
-					synchronizingObject.Invoke(new DoWillCloseDelegate(DoWillClose), args);
-				}
-				else if (allowApplicationForms)
-				{
-					System.Windows.Forms.Form appForm = GetApplicationForm();
-					if (appForm != null)
-					{
-						appForm.Invoke(new DoWillCloseDelegate(DoWillClose), e);
-					}
-				}
-				else if (allowMultithreadedCallbacks)
-				{
-					// Note: This is the second to last event that occurs (for outgoing connection)
+				//if (synchronizingObject != null)
+				//{
+				//	object[] args = { e };
+				//	synchronizingObject.Invoke(new DoWillCloseDelegate(DoWillClose), args);
+				//}
+				//else if (allowApplicationForms)
+				//{
+				//	System.Windows.Forms.Form appForm = GetApplicationForm();
+				//	if (appForm != null)
+				//	{
+				//		appForm.Invoke(new DoWillCloseDelegate(DoWillClose), e);
+				//	}
+				//}
+				//else if (allowMultithreadedCallbacks)
+				//{
+				//	// Note: This is the second to last event that occurs (for outgoing connection)
 
-					object[] delPlusArgs = { WillClose, this, e };
-					eventQueue.Enqueue(delPlusArgs);
-					ProcessEvent();
-				}
+				//	object[] delPlusArgs = { WillClose, this, e };
+				//	eventQueue.Enqueue(delPlusArgs);
+				//	ProcessEvent();
+				//}
 			}
 		}
 
@@ -592,26 +592,26 @@ namespace Deusty.Net
 
 			if (DidClose != null)
 			{
-				if (synchronizingObject != null)
-				{
-					synchronizingObject.Invoke(new DoDidCloseDelegate(DoDidClose), null);
-				}
-				else if (allowApplicationForms)
-				{
-					System.Windows.Forms.Form appForm = GetApplicationForm();
-					if (appForm != null)
-					{
-						appForm.Invoke(new DoDidCloseDelegate(DoDidClose));
-					}
-				}
-				else if (allowMultithreadedCallbacks)
-				{
-					// Note: This is the last event that occurs (for outgoing connection)
+				//if (synchronizingObject != null)
+				//{
+				//	synchronizingObject.Invoke(new DoDidCloseDelegate(DoDidClose), null);
+				//}
+				//else if (allowApplicationForms)
+				//{
+				//	System.Windows.Forms.Form appForm = GetApplicationForm();
+				//	if (appForm != null)
+				//	{
+				//		appForm.Invoke(new DoDidCloseDelegate(DoDidClose));
+				//	}
+				//}
+				//else if (allowMultithreadedCallbacks)
+				//{
+				//	// Note: This is the last event that occurs (for outgoing connection)
 
-					object[] delPlusArgs = { DidClose, this };
-					eventQueue.Enqueue(delPlusArgs);
-					ProcessEvent();
-				}
+				//	object[] delPlusArgs = { DidClose, this };
+				//	eventQueue.Enqueue(delPlusArgs);
+				//	ProcessEvent();
+				//}
 			}
 		}
 
@@ -897,37 +897,37 @@ namespace Deusty.Net
 			}
 		}
 
-		/// <summary>
-		/// Returns a form that can be used to invoke an event.
-		/// </summary>
-		private System.Windows.Forms.Form GetApplicationForm()
-		{
-			System.Windows.Forms.FormCollection forms = System.Windows.Forms.Application.OpenForms;
+		///// <summary>
+		///// Returns a form that can be used to invoke an event.
+		///// </summary>
+		//private System.Windows.Forms.Form GetApplicationForm()
+		//{
+		//	System.Windows.Forms.FormCollection forms = System.Windows.Forms.Application.OpenForms;
 
-			if (forms != null && forms.Count > 0)
-			{
-				return forms[0];
-			}
+		//	if (forms != null && forms.Count > 0)
+		//	{
+		//		return forms[0];
+		//	}
 
-			return null;
-		}
+		//	return null;
+		//}
 
-		/// <summary>
-		/// Allows invoke options to be inherited from another AsyncSocket.
-		/// This is usefull when accepting connections.
-		/// </summary>
-		/// <param name="fromSocket">
-		///		AsyncSocket object to copy invoke options from.
-		///	</param>
-		protected void InheritInvokeOptions(AsyncSocket fromSocket)
-		{
-			// We set the MultiThreadedCallback property first,
-			// as it has the potential to affect the other properties.
-			AllowMultithreadedCallbacks = fromSocket.AllowMultithreadedCallbacks;
+		///// <summary>
+		///// Allows invoke options to be inherited from another AsyncSocket.
+		///// This is usefull when accepting connections.
+		///// </summary>
+		///// <param name="fromSocket">
+		/////		AsyncSocket object to copy invoke options from.
+		/////	</param>
+		//protected void InheritInvokeOptions(AsyncSocket fromSocket)
+		//{
+		//	// We set the MultiThreadedCallback property first,
+		//	// as it has the potential to affect the other properties.
+		//	AllowMultithreadedCallbacks = fromSocket.AllowMultithreadedCallbacks;
 
-			AllowApplicationForms = fromSocket.AllowApplicationForms;
-			SynchronizingObject = fromSocket.SynchronizingObject;
-		}
+		//	AllowApplicationForms = fromSocket.AllowApplicationForms;
+		//	SynchronizingObject = fromSocket.SynchronizingObject;
+		//}
 
 		///////////////////////////////////////////////////////////////////////////////////////////////////////////////
 		#endregion
@@ -1262,7 +1262,7 @@ namespace Deusty.Net
 					Socket newSocket = socket.EndAccept(iar);
 					AsyncSocket newAsyncSocket = new AsyncSocket();
 
-					newAsyncSocket.InheritInvokeOptions(this);
+					//newAsyncSocket.InheritInvokeOptions(this);
 					newAsyncSocket.PreConfigure(newSocket);
 
 					OnSocketDidAccept(newAsyncSocket);
