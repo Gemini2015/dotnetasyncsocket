@@ -26,7 +26,6 @@ namespace Deusty.Net
 		public delegate void SocketDidReadPartial(AsyncSocket sender, int partialLength, long tag);
 		public delegate void SocketDidWrite(AsyncSocket sender, long tag);
 		public delegate void SocketDidWritePartial(AsyncSocket sender, int partialLength, long tag);
-		public delegate void SocketDidSecure(AsyncSocket sender, X509Certificate localCert, X509Certificate remoteCert);
 		public delegate void SocketWillClose(AsyncSocket sender, Exception e);
 		public delegate void SocketDidClose(AsyncSocket sender);
 
@@ -37,7 +36,6 @@ namespace Deusty.Net
 		public event SocketDidReadPartial DidReadPartial;
 		public event SocketDidWrite DidWrite;
 		public event SocketDidWritePartial DidWritePartial;
-		public event SocketDidSecure DidSecure;
 		public event SocketWillClose WillClose;
 		public event SocketDidClose DidClose;
 
@@ -45,7 +43,6 @@ namespace Deusty.Net
 		private Socket socket6;
 		private Stream stream;
 		private NetworkStream socketStream;
-		private SslStream secureSocketStream;
 
 		private const int INIT_READQUEUE_CAPACITY = 5;
 		private const int INIT_WRITEQUEUE_CAPACITY = 5;
@@ -53,9 +50,9 @@ namespace Deusty.Net
 
 		private const int CONNECTION_QUEUE_CAPACITY = 10;
 
-		private const int READ_CHUNKSIZE    = (1024 * 16);
-		private const int READALL_CHUNKSIZE = (1024 * 32);
-		private const int WRITE_CHUNKSIZE   = (1024 * 32);
+		private const int READ_CHUNKSIZE    = (1024 * 64);
+		private const int READALL_CHUNKSIZE = (1024 * 64);
+		private const int WRITE_CHUNKSIZE   = (1024 * 64);
 
 		private volatile byte flags;
 		private const byte kDidPassConnectMethod  = 1 << 0;  // If set, disconnection results in delegate call
@@ -162,20 +159,7 @@ namespace Deusty.Net
 				this.tag = tag;
 			}
 		}
-
-		/// <summary>
-		/// Encompasses special instructions for interruptions in the read/write queues.
-		/// This class my be altered to support more than just TLS in the future.
-		/// </summary>
-		private class AsyncSpecialPacket
-		{
-			public bool startTLS;
-
-			public AsyncSpecialPacket(bool startTLS)
-			{
-				this.startTLS = startTLS;
-			}
-		}
+        
 
 		private class ConnectParameters
 		{
@@ -226,77 +210,7 @@ namespace Deusty.Net
 			get { return mTag; }
 			set { mTag = value; }
 		}
-
-		//private System.ComponentModel.ISynchronizeInvoke synchronizingObject = null;
-		///// <summary>
-		///// Set the <see cref="System.ComponentModel.ISynchronizeInvoke">ISynchronizeInvoke</see>
-		///// object to use as the invoke object. When returning results from asynchronous calls,
-		///// the Invoke method on this object will be called to pass the results back
-		///// in a thread safe manner.
-		///// </summary>
-		///// <remarks>
-		///// If using in conjunction with a form, it is highly recommended
-		///// that you pass your main <see cref="System.Windows.Forms.Form">form</see> (window) in.
-		///// </remarks>
-		///// <remarks>
-		///// You should configure your invoke options before you start reading/writing.
-		///// It's recommended you don't change your invoke options in the middle of reading/writing.
-		///// </remarks>
-		//public System.ComponentModel.ISynchronizeInvoke SynchronizingObject
-		//{
-		//	get { return synchronizingObject; }
-		//	set { synchronizingObject = value; }
-		//}
-
-		//private bool allowApplicationForms = true;
-		///// <summary>
-		///// Allows the application to attempt to post async replies over the
-		///// application "main loop" by using the message queue of the first available
-		///// open form (window). This is retrieved through
-		///// <see cref="System.Windows.Forms.Application.OpenForms">Application.OpenForms</see>.
-		///// 
-		///// Note: This is true by default.
-		///// </summary>
-		///// <remarks>
-		///// You should configure your invoke options before you start reading/writing.
-		///// It's recommended you don't change your invoke options in the middle of reading/writing.
-		///// </remarks>
-		//public bool AllowApplicationForms
-		//{
-		//	get { return allowApplicationForms; }
-		//	set { allowApplicationForms = value; }
-		//}
-
-		//private bool allowMultithreadedCallbacks = false;
-		///// <summary>
-		///// If set to true, <see cref="AllowApplicationForms">AllowApplicationForms</see>
-		///// is set to false and <see cref="SynchronizingObject">SynchronizingObject</see> is set
-		///// to null. Any time an asynchronous method needs to invoke a delegate method
-		///// it will run the method in its own thread.
-		///// </summary>
-		///// <remarks>
-		///// If set to true, you will have to handle any synchronization needed.
-		///// If your application uses Windows.Forms or any other non-thread safe
-		///// library, then you will have to do your own invoking.
-		///// </remarks>
-		///// <remarks>
-		///// You should configure your invoke options before you start reading/writing.
-		///// It's recommended you don't change your invoke options in the middle of reading/writing.
-		///// </remarks>
-		//public bool AllowMultithreadedCallbacks
-		//{
-		//	get { return allowMultithreadedCallbacks; }
-		//	set
-		//	{
-		//		allowMultithreadedCallbacks = value;
-		//		if (allowMultithreadedCallbacks)
-		//		{
-		//			allowApplicationForms = false;
-		//			synchronizingObject = null;
-		//		}
-		//	}
-		//}
-			
+	
 		// What is going on with the event handler methods below?
 		// 
 		// The asynchronous nature of this class means that we're very multithreaded.
@@ -320,26 +234,32 @@ namespace Deusty.Net
 
 			if (DidAccept != null)
 			{
-				//if (synchronizingObject != null)
-				//{
-				//	object[] args = { newSocket };
-				//	synchronizingObject.Invoke(new DoDidAcceptDelegate(DoDidAccept), args);
-				//}
-				//else if (allowApplicationForms)
-				//{
-				//	System.Windows.Forms.Form appForm = GetApplicationForm();
-				//	if (appForm != null)
-				//	{
-				//		appForm.Invoke(new DoDidAcceptDelegate(DoDidAccept), newSocket);
-				//	}
-				//}
-				//else if (allowMultithreadedCallbacks)
-				//{
-				//	object[] delPlusArgs = { DidAccept, this, newSocket };
-				//	eventQueue.Enqueue(delPlusArgs);
-				//	ProcessEvent();
-				//}
-			}
+                object[] delPlusArgs = { DidAccept, this, newSocket };
+                lock (eventQueue)
+                {
+                    eventQueue.Enqueue(delPlusArgs);
+                }
+
+                //if (synchronizingObject != null)
+                //{
+                //	object[] args = { newSocket };
+                //	synchronizingObject.Invoke(new DoDidAcceptDelegate(DoDidAccept), args);
+                //}
+                //else if (allowApplicationForms)
+                //{
+                //	System.Windows.Forms.Form appForm = GetApplicationForm();
+                //	if (appForm != null)
+                //	{
+                //		appForm.Invoke(new DoDidAcceptDelegate(DoDidAccept), newSocket);
+                //	}
+                //}
+                //else if (allowMultithreadedCallbacks)
+                //{
+                //	object[] delPlusArgs = { DidAccept, this, newSocket };
+                //	eventQueue.Enqueue(delPlusArgs);
+                //	ProcessEvent();
+                //}
+            }
 		}
 
 		protected virtual bool OnSocketWillConnect(Socket socket)
@@ -350,30 +270,35 @@ namespace Deusty.Net
 			if (WillConnect != null)
 			{
 				object result = null;
+                object[] delPlusArgs = { WillConnect, this, socket };
+                lock(eventQueue)
+                {
+                    eventQueue.Enqueue(delPlusArgs);
+                }
 
-				//if (synchronizingObject != null)
-				//{
-				//	object[] args = { socket };
-				//	result = synchronizingObject.Invoke(new DoWillConnectDelegate(DoWillConnect), args);
-				//}
-				//else if (allowApplicationForms)
-				//{
-				//	System.Windows.Forms.Form appForm = GetApplicationForm();
-				//	if (appForm != null)
-				//	{
-				//		result = appForm.Invoke(new DoWillConnectDelegate(DoWillConnect), socket);
-				//	}
-				//}
-				//else if (allowMultithreadedCallbacks)
-				//{
-				//	// Note: This is the first event that occurs (for outgoing connection)
+                //if (synchronizingObject != null)
+                //{
+                //	object[] args = { socket };
+                //	result = synchronizingObject.Invoke(new DoWillConnectDelegate(DoWillConnect), args);
+                //}
+                //else if (allowApplicationForms)
+                //{
+                //	System.Windows.Forms.Form appForm = GetApplicationForm();
+                //	if (appForm != null)
+                //	{
+                //		result = appForm.Invoke(new DoWillConnectDelegate(DoWillConnect), socket);
+                //	}
+                //}
+                //else if (allowMultithreadedCallbacks)
+                //{
+                //	// Note: This is the first event that occurs (for outgoing connection)
 
-				//	object[] delPlusArgs = { WillConnect, this, socket };
-				//	eventQueue.Enqueue(delPlusArgs);
-				//	result = ProcessEvent();
-				//}
+                //	object[] delPlusArgs = { WillConnect, this, socket };
+                //	eventQueue.Enqueue(delPlusArgs);
+                //	result = ProcessEvent();
+                //}
 
-				return (result == null || !(result is bool)) ? true : (bool)result;
+                return (result == null || !(result is bool)) ? true : (bool)result;
 			}
 
 			return true;
@@ -387,27 +312,33 @@ namespace Deusty.Net
 
 			if (DidConnect != null)
 			{
-				//if (synchronizingObject != null)
-				//{
-				//	object[] args = { address, port };
-				//	synchronizingObject.BeginInvoke(new DoDidConnectDelegate(DoDidConnect), args);
-				//}
-				//else if (allowApplicationForms)
-				//{
-				//	System.Windows.Forms.Form appForm = GetApplicationForm();
-				//	if (appForm != null)
-				//	{
-				//		appForm.BeginInvoke(new DoDidConnectDelegate(DoDidConnect), address, port);
-				//	}
-				//}
-				//else if (allowMultithreadedCallbacks)
-				//{
-				//	object[] delPlusArgs = { DidConnect, this, address, port };
-				//	eventQueue.Enqueue(delPlusArgs);
-				//	ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent));
-				//}
-			}
-		}
+                object[] delPlusArgs = { DidConnect, this, address, port };
+                lock (eventQueue)
+                {
+                    eventQueue.Enqueue(delPlusArgs);
+                }
+
+                //if (synchronizingObject != null)
+                //{
+                //	object[] args = { address, port };
+                //	synchronizingObject.BeginInvoke(new DoDidConnectDelegate(DoDidConnect), args);
+                //}
+                //else if (allowApplicationForms)
+                //{
+                //	System.Windows.Forms.Form appForm = GetApplicationForm();
+                //	if (appForm != null)
+                //	{
+                //		appForm.BeginInvoke(new DoDidConnectDelegate(DoDidConnect), address, port);
+                //	}
+                //}
+                //else if (allowMultithreadedCallbacks)
+                //{
+                //	object[] delPlusArgs = { DidConnect, this, address, port };
+                //	eventQueue.Enqueue(delPlusArgs);
+                //	ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent));
+                //}
+            }
+        }
 
 		protected virtual void OnSocketDidRead(byte[] data, long tag)
 		{
@@ -416,27 +347,33 @@ namespace Deusty.Net
 
 			if (DidRead != null)
 			{
-				//if (synchronizingObject != null)
-				//{
-				//	object[] args = { data, tag };
-				//	synchronizingObject.BeginInvoke(new DoDidReadDelegate(DoDidRead), args);
-				//}
-				//else if (allowApplicationForms)
-				//{
-				//	System.Windows.Forms.Form appForm = GetApplicationForm();
-				//	if (appForm != null)
-				//	{
-				//		appForm.BeginInvoke(new DoDidReadDelegate(DoDidRead), data, tag);
-				//	}
-				//}
-				//else if (allowMultithreadedCallbacks)
-				//{
-				//	object[] delPlusArgs = { DidRead, this, data, tag };
-				//	eventQueue.Enqueue(delPlusArgs);
-				//	ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent));
-				//}
-			}
-		}
+                object[] delPlusArgs = { DidRead, this, data, tag };
+                lock(eventQueue)
+                {
+                    eventQueue.Enqueue(delPlusArgs);
+                }
+
+                //if (synchronizingObject != null)
+                //{
+                //	object[] args = { data, tag };
+                //	synchronizingObject.BeginInvoke(new DoDidReadDelegate(DoDidRead), args);
+                //}
+                //else if (allowApplicationForms)
+                //{
+                //	System.Windows.Forms.Form appForm = GetApplicationForm();
+                //	if (appForm != null)
+                //	{
+                //		appForm.BeginInvoke(new DoDidReadDelegate(DoDidRead), data, tag);
+                //	}
+                //}
+                //else if (allowMultithreadedCallbacks)
+                //{
+                //	object[] delPlusArgs = { DidRead, this, data, tag };
+                //	eventQueue.Enqueue(delPlusArgs);
+                //	ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent));
+                //}
+            }
+        }
 
 		protected virtual void OnSocketDidReadPartial(int partialLength, long tag)
 		{
@@ -445,27 +382,33 @@ namespace Deusty.Net
 
 			if (DidReadPartial != null)
 			{
-				//if (synchronizingObject != null)
-				//{
-				//	object[] args = { partialLength, tag };
-				//	synchronizingObject.BeginInvoke(new DoDidReadPartialDelegate(DoDidReadPartial), args);
-				//}
-				//else if (allowApplicationForms)
-				//{
-				//	System.Windows.Forms.Form appForm = GetApplicationForm();
-				//	if (appForm != null)
-				//	{
-				//		appForm.BeginInvoke(new DoDidReadPartialDelegate(DoDidReadPartial), partialLength, tag);
-				//	}
-				//}
-				//else if (allowMultithreadedCallbacks)
-				//{
-				//	object[] delPlusArgs = { DidReadPartial, this, partialLength, tag };
-				//	eventQueue.Enqueue(delPlusArgs);
-				//	ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent));
-				//}
-			}
-		}
+                object[] delPlusArgs = { DidReadPartial, this, partialLength, tag };
+                lock(eventQueue)
+                {
+                    eventQueue.Enqueue(delPlusArgs);
+                }
+
+                //if (synchronizingObject != null)
+                //{
+                //	object[] args = { partialLength, tag };
+                //	synchronizingObject.BeginInvoke(new DoDidReadPartialDelegate(DoDidReadPartial), args);
+                //}
+                //else if (allowApplicationForms)
+                //{
+                //	System.Windows.Forms.Form appForm = GetApplicationForm();
+                //	if (appForm != null)
+                //	{
+                //		appForm.BeginInvoke(new DoDidReadPartialDelegate(DoDidReadPartial), partialLength, tag);
+                //	}
+                //}
+                //else if (allowMultithreadedCallbacks)
+                //{
+                //	object[] delPlusArgs = { DidReadPartial, this, partialLength, tag };
+                //	eventQueue.Enqueue(delPlusArgs);
+                //	ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent));
+                //}
+            }
+        }
 
 		protected virtual void OnSocketDidWrite(long tag)
 		{
@@ -474,27 +417,33 @@ namespace Deusty.Net
 
 			if (DidWrite != null)
 			{
-				//if (synchronizingObject != null)
-				//{
-				//	object[] args = { tag };
-				//	synchronizingObject.BeginInvoke(new DoDidWriteDelegate(DoDidWrite), args);
-				//}
-				//else if (allowApplicationForms)
-				//{
-				//	System.Windows.Forms.Form appForm = GetApplicationForm();
-				//	if (appForm != null)
-				//	{
-				//		appForm.BeginInvoke(new DoDidWriteDelegate(DoDidWrite), tag);
-				//	}
-				//}
-				//else if (allowMultithreadedCallbacks)
-				//{
-				//	object[] delPlusArgs = { DidWrite, this, tag };
-				//	eventQueue.Enqueue(delPlusArgs);
-				//	ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent));
-				//}
-			}
-		}
+                object[] delPlusArgs = { DidWrite, this, tag };
+                lock(eventQueue)
+                {
+                    eventQueue.Enqueue(delPlusArgs);
+                }
+
+                //if (synchronizingObject != null)
+                //{
+                //	object[] args = { tag };
+                //	synchronizingObject.BeginInvoke(new DoDidWriteDelegate(DoDidWrite), args);
+                //}
+                //else if (allowApplicationForms)
+                //{
+                //	System.Windows.Forms.Form appForm = GetApplicationForm();
+                //	if (appForm != null)
+                //	{
+                //		appForm.BeginInvoke(new DoDidWriteDelegate(DoDidWrite), tag);
+                //	}
+                //}
+                //else if (allowMultithreadedCallbacks)
+                //{
+                //	object[] delPlusArgs = { DidWrite, this, tag };
+                //	eventQueue.Enqueue(delPlusArgs);
+                //	ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent));
+                //}
+            }
+        }
 
 		protected virtual void OnSocketDidWritePartial(int partialLength, long tag)
 		{
@@ -503,57 +452,34 @@ namespace Deusty.Net
 
 			if (DidWritePartial != null)
 			{
-				//if (synchronizingObject != null)
-				//{
-				//	object[] args = { partialLength, tag };
-				//	synchronizingObject.BeginInvoke(new DoDidWritePartialDelegate(DoDidWritePartial), args);
-				//}
-				//else if (allowApplicationForms)
-				//{
-				//	System.Windows.Forms.Form appForm = GetApplicationForm();
-				//	if (appForm != null)
-				//	{
-				//		appForm.BeginInvoke(new DoDidWritePartialDelegate(DoDidWritePartial), partialLength, tag);
-				//	}
-				//}
-				//else if (allowMultithreadedCallbacks)
-				//{
-				//	object[] delPlusArgs = { DidWritePartial, this, partialLength, tag };
-				//	eventQueue.Enqueue(delPlusArgs);
-				//	ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent));
-				//}
-			}
-		}
+                object[] delPlusArgs = { DidWritePartial, this, partialLength, tag };
+                lock(eventQueue)
+                {
+                    eventQueue.Enqueue(delPlusArgs);
+                }
 
-		protected virtual void OnSocketDidSecure(X509Certificate localCert, X509Certificate remoteCert)
-		{
-			// ASYNCHRONOUS
-			// This allows the socket to quickly move on to previously scheduled read/write operations.
-
-			if (DidSecure != null)
-			{
-				//if (synchronizingObject != null)
-				//{
-				//	object[] args = { localCert, remoteCert };
-				//	synchronizingObject.BeginInvoke(new DoDidSecureDelegate(DoDidSecure), args);
-				//}
-				//else if (allowApplicationForms)
-				//{
-				//	System.Windows.Forms.Form appForm = GetApplicationForm();
-				//	if (appForm != null)
-				//	{
-				//		appForm.BeginInvoke(new DoDidSecureDelegate(DoDidSecure), localCert, remoteCert);
-				//	}
-				//}
-				//else if (allowMultithreadedCallbacks)
-				//{
-				//	object[] delPlusArgs = { DidSecure, this, localCert, remoteCert };
-				//	eventQueue.Enqueue(delPlusArgs);
-				//	ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent));
-				//}
-			}
-		}
-
+                //if (synchronizingObject != null)
+                //{
+                //	object[] args = { partialLength, tag };
+                //	synchronizingObject.BeginInvoke(new DoDidWritePartialDelegate(DoDidWritePartial), args);
+                //}
+                //else if (allowApplicationForms)
+                //{
+                //	System.Windows.Forms.Form appForm = GetApplicationForm();
+                //	if (appForm != null)
+                //	{
+                //		appForm.BeginInvoke(new DoDidWritePartialDelegate(DoDidWritePartial), partialLength, tag);
+                //	}
+                //}
+                //else if (allowMultithreadedCallbacks)
+                //{
+                //	object[] delPlusArgs = { DidWritePartial, this, partialLength, tag };
+                //	eventQueue.Enqueue(delPlusArgs);
+                //	ThreadPool.QueueUserWorkItem(new WaitCallback(ProcessEvent));
+                //}
+            }
+        }
+        
 		protected virtual void OnSocketWillClose(Exception e)
 		{
 			// SYNCHRONOUS
@@ -561,29 +487,35 @@ namespace Deusty.Net
 
 			if (WillClose != null)
 			{
-				//if (synchronizingObject != null)
-				//{
-				//	object[] args = { e };
-				//	synchronizingObject.Invoke(new DoWillCloseDelegate(DoWillClose), args);
-				//}
-				//else if (allowApplicationForms)
-				//{
-				//	System.Windows.Forms.Form appForm = GetApplicationForm();
-				//	if (appForm != null)
-				//	{
-				//		appForm.Invoke(new DoWillCloseDelegate(DoWillClose), e);
-				//	}
-				//}
-				//else if (allowMultithreadedCallbacks)
-				//{
-				//	// Note: This is the second to last event that occurs (for outgoing connection)
+                object[] delPlusArgs = { WillClose, this, e };
+                lock(eventQueue)
+                {
+                    eventQueue.Enqueue(delPlusArgs);
+                }
 
-				//	object[] delPlusArgs = { WillClose, this, e };
-				//	eventQueue.Enqueue(delPlusArgs);
-				//	ProcessEvent();
-				//}
-			}
-		}
+                //if (synchronizingObject != null)
+                //{
+                //	object[] args = { e };
+                //	synchronizingObject.Invoke(new DoWillCloseDelegate(DoWillClose), args);
+                //}
+                //else if (allowApplicationForms)
+                //{
+                //	System.Windows.Forms.Form appForm = GetApplicationForm();
+                //	if (appForm != null)
+                //	{
+                //		appForm.Invoke(new DoWillCloseDelegate(DoWillClose), e);
+                //	}
+                //}
+                //else if (allowMultithreadedCallbacks)
+                //{
+                //	// Note: This is the second to last event that occurs (for outgoing connection)
+
+                //	object[] delPlusArgs = { WillClose, this, e };
+                //	eventQueue.Enqueue(delPlusArgs);
+                //	ProcessEvent();
+                //}
+            }
+        }
 
 		protected virtual void OnSocketDidClose()
 		{
@@ -592,28 +524,34 @@ namespace Deusty.Net
 
 			if (DidClose != null)
 			{
-				//if (synchronizingObject != null)
-				//{
-				//	synchronizingObject.Invoke(new DoDidCloseDelegate(DoDidClose), null);
-				//}
-				//else if (allowApplicationForms)
-				//{
-				//	System.Windows.Forms.Form appForm = GetApplicationForm();
-				//	if (appForm != null)
-				//	{
-				//		appForm.Invoke(new DoDidCloseDelegate(DoDidClose));
-				//	}
-				//}
-				//else if (allowMultithreadedCallbacks)
-				//{
-				//	// Note: This is the last event that occurs (for outgoing connection)
+                object[] delPlusArgs = { DidClose, this };
+                lock(eventQueue)
+                {
+                    eventQueue.Enqueue(delPlusArgs);
+                }
 
-				//	object[] delPlusArgs = { DidClose, this };
-				//	eventQueue.Enqueue(delPlusArgs);
-				//	ProcessEvent();
-				//}
-			}
-		}
+                //if (synchronizingObject != null)
+                //{
+                //	synchronizingObject.Invoke(new DoDidCloseDelegate(DoDidClose), null);
+                //}
+                //else if (allowApplicationForms)
+                //{
+                //	System.Windows.Forms.Form appForm = GetApplicationForm();
+                //	if (appForm != null)
+                //	{
+                //		appForm.Invoke(new DoDidCloseDelegate(DoDidClose));
+                //	}
+                //}
+                //else if (allowMultithreadedCallbacks)
+                //{
+                //	// Note: This is the last event that occurs (for outgoing connection)
+
+                //	object[] delPlusArgs = { DidClose, this };
+                //	eventQueue.Enqueue(delPlusArgs);
+                //	ProcessEvent();
+                //}
+            }
+        }
 
 		private delegate void DoDidAcceptDelegate(AsyncSocket newSocket);
 		private void DoDidAccept(AsyncSocket newSocket)
@@ -756,27 +694,7 @@ namespace Deusty.Net
 			}
 			catch { }
 		}
-
-		private delegate void DoDidSecureDelegate(X509Certificate localCert, X509Certificate remoteCert);
-		private void DoDidSecure(X509Certificate localCert, X509Certificate remoteCert)
-		{
-			// Threading Notes:
-			// This method is called when using a SynchronizingObject or AppForms,
-			// so method is executed on the same thread that the delegate is using.
-			// Thus, the kClosed flag prevents any callbacks after the delegate calls the close method.
-
-			if ((flags & kClosed) != 0) return;
-
-			try
-			{
-				if (DidSecure != null)
-				{
-					DidSecure(this, localCert, remoteCert);
-				}
-			}
-			catch { }
-		}
-
+        
 		private delegate void DoWillCloseDelegate(Exception e);
 		private void DoWillClose(Exception e)
 		{
@@ -897,38 +815,44 @@ namespace Deusty.Net
 			}
 		}
 
-		///// <summary>
-		///// Returns a form that can be used to invoke an event.
-		///// </summary>
-		//private System.Windows.Forms.Form GetApplicationForm()
-		//{
-		//	System.Windows.Forms.FormCollection forms = System.Windows.Forms.Application.OpenForms;
+        public void ProcessOneEvent()
+        {
+            object[] delPlusArgs = null;
+            lock (eventQueue)
+            {
+                if (eventQueue.Count > 0)
+                    delPlusArgs = (object[])eventQueue.Dequeue();
+            }
 
-		//	if (forms != null && forms.Count > 0)
-		//	{
-		//		return forms[0];
-		//	}
+            if (delPlusArgs == null)
+                return;
 
-		//	return null;
-		//}
+            object[] args = new object[delPlusArgs.Length - 1];
 
-		///// <summary>
-		///// Allows invoke options to be inherited from another AsyncSocket.
-		///// This is usefull when accepting connections.
-		///// </summary>
-		///// <param name="fromSocket">
-		/////		AsyncSocket object to copy invoke options from.
-		/////	</param>
-		//protected void InheritInvokeOptions(AsyncSocket fromSocket)
-		//{
-		//	// We set the MultiThreadedCallback property first,
-		//	// as it has the potential to affect the other properties.
-		//	AllowMultithreadedCallbacks = fromSocket.AllowMultithreadedCallbacks;
+            Delegate del = (Delegate)delPlusArgs[0];
+            Array.Copy(delPlusArgs, 1, args, 0, delPlusArgs.Length - 1);
 
-		//	AllowApplicationForms = fromSocket.AllowApplicationForms;
-		//	SynchronizingObject = fromSocket.SynchronizingObject;
-		//}
+            bool shouldInvokeDelegate = true;
 
+            if (del == null)
+            {
+                shouldInvokeDelegate = false;
+            }
+            else if ((flags & kClosed) > 0)
+            {
+                shouldInvokeDelegate = (del == (Delegate)DidClose);
+            }
+
+            if (shouldInvokeDelegate)
+            {
+                try
+                {
+                    del.DynamicInvoke(args);
+                }
+                catch { }
+            }
+        }
+        
 		///////////////////////////////////////////////////////////////////////////////////////////////////////////////
 		#endregion
 		///////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -1660,208 +1584,7 @@ namespace Deusty.Net
 		///////////////////////////////////////////////////////////////////////////////////////////////////////////////
 		#endregion
 		///////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-		///////////////////////////////////////////////////////////////////////////////////////////////////////////////
-		#region Security
-		///////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-		// Temporary variables for storing StartTLS information before we can actually start TLS
-		private bool isTLSClient;
-		private String tlsServerName;
-		private RemoteCertificateValidationCallback tlsRemoteCallback;
-		private LocalCertificateSelectionCallback tlsLocalCallback;
-		private X509Certificate localCertificate;
-
-		/// <summary>
-		/// Secures the stream using SSL/TLS.
-		/// The socket is secured immediately following any pending reads/writes already in the queue.
-		/// Any reads/writes scheduled after this call will travel over a secure connection.
-		/// 
-		/// Note: You can't just call this on any old connection.
-		/// TLS requires support on both ends, and should be called in accordance with the protocol in use.
-		/// 
-		/// Note: You cannot pass a null serverName.
-		/// If you don't know the server name, pass an empty string, and use the remote callback as needed.
-		/// 
-		/// If TLS fails to authenticate, the event WillCloseWithException will fire with the reason.
-		/// </summary>
-		/// <param name="serverName">
-		///		The expected server name on the remote certificate.
-		///		This cannot be null. If you don't know, pass an empty stream and use the remote callback as needed.
-		/// </param>
-		/// <param name="rcvc">
-		///		A RemoteCertificateValidationCallback delegate responsible for
-		///		validating the certificate supplied by the remote party.
-		///		Pass null if you don't need this functionality.
-		/// </param>
-		/// <param name="lcsc">
-		///		A LocalCertificateSelectionCallback delegate responsible for
-		///		selecting the certificate used for authentication.
-		///		Pass null if you don't need this functionality.
-		/// </param>
-		public void StartTLSAsClient(String serverName, RemoteCertificateValidationCallback rcvc,
-		                                                  LocalCertificateSelectionCallback lcsc)
-		{
-			// Update tls variables - we'll need to refer to these later when we actually start tls
-			isTLSClient = true;
-			tlsServerName = serverName;
-			tlsRemoteCallback = rcvc;
-			tlsLocalCallback = lcsc;
-
-			// Inject StartTLS packets into read and write queues.
-			// Once all pending reads and writes have completed, the StartTLS procedure will commence.
-			AsyncSpecialPacket startTlsPacket = new AsyncSpecialPacket(true);
-			readQueue.Enqueue(startTlsPacket);
-			writeQueue.Enqueue(startTlsPacket);
-
-			// Queue calls to MaybeDequeueRead and MaybeDequeueWrite
-			ThreadPool.QueueUserWorkItem(new WaitCallback(MaybeDequeueRead));
-			ThreadPool.QueueUserWorkItem(new WaitCallback(MaybeDequeueWrite));
-		}
-		
-		/// <summary>
-		/// Secures the stream using SSL/TLS.
-		/// The socket is secured immediately following any pending reads/writes already in the queue.
-		/// Any reads/writes scheduled after this call will travel over a secure connection.
-		/// 
-		/// Note: You must use the LocalCertificateSelectionCallback to return the required certificate for a server.
-		/// 
-		/// If TLS fails to authenticate, the event WillCloseWithException will fire with the reason.
-		/// </summary>
-		/// <param name="rcvc">
-		///		A RemoteCertificateValidationCallback delegate responsible for
-		///		validating the certificate supplied by the remote party.
-		///		Pass null if you don't need this functionality.
-		/// </param>
-		/// <param name="lcsc">
-		///		A LocalCertificateSelectionCallback delegate responsible for
-		///		selecting the certificate used for authentication.
-		///		Pass null if you don't need this functionality.
-		/// </param>
-		public void StartTLSAsServer(X509Certificate serverCertificate, RemoteCertificateValidationCallback rcvc,
-		                                                                  LocalCertificateSelectionCallback lcsc)
-		{
-			// Update tls variables - we'll need to refer to these later when we actually start tls
-			isTLSClient = false;
-			localCertificate = serverCertificate;
-			tlsRemoteCallback = rcvc;
-			tlsLocalCallback = lcsc;
-
-			// Inject StartTLS packets into read and write queues.
-			// Once all pending reads and writes have completed, the StartTLS procedure will commence.
-			AsyncSpecialPacket startTlsPacket = new AsyncSpecialPacket(true);
-			readQueue.Enqueue(startTlsPacket);
-			writeQueue.Enqueue(startTlsPacket);
-
-			// Queue calls to MaybeDequeueRead and MaybeDequeueWrite
-			ThreadPool.QueueUserWorkItem(new WaitCallback(MaybeDequeueRead));
-			ThreadPool.QueueUserWorkItem(new WaitCallback(MaybeDequeueWrite));
-		}
-
-		/// <summary>
-		/// Starts the TLS procedure ONLY if it's the correct time to do so.
-		/// This is dependent on several variables, such as the kPause flags, connected property, etc.
-		/// 
-		/// This method is NOT thread safe, and should only be invoked via thread safe methods.
-		/// </summary>
-		private void MaybeStartTLS()
-		{
-			Debug.Assert(socketStream != null, "Attempting to start tls without a connected socket");
-			Trace.Assert(secureSocketStream == null, "Attempting to start tls after tls has already completed");
-
-			// We can't start TLS until:
-			// - Any queued reads prior to the user calling StartTLS are complete
-			// - Any queued writes prior to the user calling StartTLS are complete
-
-			if (((flags & kPauseReads) > 0) && ((flags & kPauseWrites) > 0))
-			{
-				try
-				{
-					secureSocketStream = new SslStream(socketStream, true, tlsRemoteCallback, tlsLocalCallback);
-
-					if (isTLSClient)
-					{
-						secureSocketStream.BeginAuthenticateAsClient(tlsServerName,
-												   new AsyncCallback(secureSocketStream_DidFinish), null);
-					}
-					else
-					{
-						secureSocketStream.BeginAuthenticateAsServer(localCertificate,
-												   new AsyncCallback(secureSocketStream_DidFinish), null);
-					}
-				}
-				catch (Exception e)
-				{
-					// The most likely cause of this exception is a null tlsServerName.
-					CloseWithException(e);
-				}
-			}
-		}
-		
-		/// <summary>
-		/// Called when the secureSocketStream has finished TLS initialization.
-		/// If it failed, then the End methods will throw an exception detailing the problem.
-		/// 
-		/// This method is thread safe.
-		/// </summary>
-		/// <param name="iar"></param>
-		private void secureSocketStream_DidFinish(IAsyncResult iar)
-		{
-			lock (lockObj)
-			{
-				if ((flags & kClosed) > 0) return;
-
-				try
-				{
-					if(isTLSClient)
-					{
-						secureSocketStream.EndAuthenticateAsClient(iar);
-					}
-					else
-					{
-						secureSocketStream.EndAuthenticateAsServer(iar);
-					}
-					
-					// Update generic stream - everything goes through our encrypted stream now
-					stream = secureSocketStream;
-					
-					// Update flags - unset pause flags
-					flags ^= kPauseReads;
-					flags ^= kPauseWrites;
-
-					// Extract X509 certificates
-
-					X509Certificate localCert = null;
-					try
-					{
-						localCert = secureSocketStream.LocalCertificate;
-					}
-					catch { }
-
-					X509Certificate remoteCert = null;
-					try
-					{
-						remoteCert = secureSocketStream.RemoteCertificate;
-					}
-					catch { }
-
-					// Invoke delegate method if needed
-					OnSocketDidSecure(localCert, remoteCert);
-					
-					// And finally, resume reading and writing
-					MaybeDequeueRead(null);
-					MaybeDequeueWrite(null);
-				}
-				catch (Exception e)
-				{
-					CloseWithException(e);
-				}
-			}
-		}
-		
-		///////////////////////////////////////////////////////////////////////////////////////////////////////////////
-		#endregion
-		///////////////////////////////////////////////////////////////////////////////////////////////////////////////
+        
 		
 		///////////////////////////////////////////////////////////////////////////////////////////////////////////////
 		#region Disconnecting
@@ -1937,12 +1660,7 @@ namespace Deusty.Net
 			lock (lockObj)
 			{
 				EmptyQueues();
-
-				if (secureSocketStream != null)
-				{
-					secureSocketStream.Close();
-					secureSocketStream = null;
-				}
+                
 				if (socketStream != null)
 				{
 					socketStream.Close();
@@ -2462,50 +2180,35 @@ namespace Deusty.Net
 					}
 					else if(readQueue.Count > 0)
 					{
-						// Get the next object in the read queue
-						Object nextRead = readQueue.Dequeue();
+                        // Get the next object in the read queue
+                        Object nextRead = readQueue.Dequeue();
+                        
+                        // Get the new current read AsyncReadPacket
+                        currentRead = (AsyncReadPacket)nextRead;
 
-						if (nextRead is AsyncSpecialPacket)
-						{
-							// Next read packet is a special instruction packet.
-							// Right now this can only mean a StartTLS instruction.
-							AsyncSpecialPacket specialRead = (AsyncSpecialPacket)nextRead;
+                        // Start time-out timer
+                        if (currentRead.timeout >= 0)
+                        {
+                            readTimer = new System.Threading.Timer(new TimerCallback(stream_DidNotRead),
+                                                                   currentRead,
+                                                                   currentRead.timeout,
+                                                                   Timeout.Infinite);
+                        }
 
-							// Update flags - this flag will be unset when TLS finishes
-							flags |= kPauseReads;
+                        // Do we have any overflow data that we've already read from the stream?
+                        if (readOverflow != null)
+                        {
+                            // Start reading from the overflow
+                            DoReadOverflow();
+                        }
+                        else
+                        {
+                            // Start reading from the stream
+                            DoStartRead();
+                        }
 
-							// And attempt to start TLS
-							// This method won't do anything unless both kPauseReads and kPauseWrites are set.
-							MaybeStartTLS();
-						}
-						else
-						{
-							// Get the new current read AsyncReadPacket
-							currentRead = (AsyncReadPacket)nextRead;
-
-							// Start time-out timer
-							if (currentRead.timeout >= 0)
-							{
-								readTimer = new System.Threading.Timer(new TimerCallback(stream_DidNotRead),
-																	   currentRead,
-																	   currentRead.timeout,
-																	   Timeout.Infinite);
-							}
-
-							// Do we have any overflow data that we've already read from the stream?
-							if (readOverflow != null)
-							{
-								// Start reading from the overflow
-								DoReadOverflow();
-							}
-							else
-							{
-								// Start reading from the stream
-								DoStartRead();
-							}
-						}
-					}
-					else if((flags & kCloseAfterReads) > 0)
+                    }
+                    else if((flags & kCloseAfterReads) > 0)
 					{
 						if ((flags & kCloseAfterWrites) > 0)
 						{
@@ -2954,45 +2657,29 @@ namespace Deusty.Net
 					{
 						// Get the next object in the read queue
 						Object nextWrite = writeQueue.Dequeue();
+                        
+                        // Get the current write AsyncWritePacket
+                        currentWrite = (AsyncWritePacket)nextWrite;
 
-						if (nextWrite is AsyncSpecialPacket)
-						{
-							// Next write packet is a special instruction packet.
-							// Right now this can only mean a StartTLS instruction.
-							AsyncSpecialPacket specialWrite = (AsyncSpecialPacket)nextWrite;
+                        // Start time-out timer
+                        if (currentWrite.timeout >= 0)
+                        {
+                            writeTimer = new System.Threading.Timer(new TimerCallback(stream_DidNotWrite),
+                                                                    currentWrite,
+                                                                    currentWrite.timeout,
+                                                                    Timeout.Infinite);
+                        }
 
-							// Update flags - this flag will be unset when TLS finishes
-							flags |= kPauseWrites;
-
-							// And attempt to start TLS
-							// This method won't do anything unless both kPauseReads and kPauseWrites are set.
-							MaybeStartTLS();
-						}
-						else
-						{
-							// Get the current write AsyncWritePacket
-							currentWrite = (AsyncWritePacket)nextWrite;
-
-							// Start time-out timer
-							if (currentWrite.timeout >= 0)
-							{
-								writeTimer = new System.Threading.Timer(new TimerCallback(stream_DidNotWrite),
-																		currentWrite,
-																		currentWrite.timeout,
-																		Timeout.Infinite);
-							}
-
-							try
-							{
-								DoSendBytes();
-							}
-							catch (Exception e)
-							{
-								CloseWithException(e);
-							}
-						}
-					}
-					else if ((flags & kCloseAfterWrites) > 0)
+                        try
+                        {
+                            DoSendBytes();
+                        }
+                        catch (Exception e)
+                        {
+                            CloseWithException(e);
+                        }
+                    }
+                    else if ((flags & kCloseAfterWrites) > 0)
 					{
 						if ((flags & kCloseAfterReads) > 0)
 						{
